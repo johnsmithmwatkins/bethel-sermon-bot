@@ -48,8 +48,9 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y ffmpeg python3-pip fonts-liberation
-          python3 -m pip install --user --upgrade yt-dlp rembg onnxruntime
+          python3 -m pip install --user --upgrade yt-dlp "rembg[cpu]" pillow onnxruntime
           echo "$HOME/.local/bin" >> $GITHUB_PATH
+          python3 -m rembg --help >/dev/null
 
       - name: Install dependencies
         run: npm install
@@ -67,6 +68,7 @@ jobs:
           STYLE_MODE: ${{ inputs.style_mode }}
 
       - name: Upload test thumbnail artifact
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: test-thumbnail
@@ -74,3 +76,4 @@ jobs:
             test-thumbnail.jpg
             preacher-cutout.png
             ai-background.png
+          if-no-files-found: warn
