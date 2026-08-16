@@ -101,10 +101,15 @@ async function wix(pathname, method, body) {
   return json;
 }
 
-async function sermonAlreadyExists(videoUrl) {
+async function sermonAlreadyExists(videoId) {
+  // Match by video ID (a substring of the stored url), not the full url string.
+  // Some older sermons were saved as youtube.com/live/ID, others as
+  // youtube.com/watch?v=ID — an exact-string match would miss those and
+  // create duplicates, so this checks whether the ID appears anywhere in
+  // the stored url instead.
   const result = await wix('/wix-data/v2/items/query', 'POST', {
     dataCollectionId: COLLECTION_ID,
-    query: { filter: { url: { $eq: videoUrl } }, paging: { limit: 1 } },
+    query: { filter: { url: { $contains: videoId } }, paging: { limit: 1 } },
   });
   return (result.dataItems || []).length > 0;
 }
@@ -266,7 +271,7 @@ async function main() {
     }
 
     const videoUrl = `https://www.youtube.com/watch?v=${id}`;
-    if (await sermonAlreadyExists(videoUrl)) {
+   if (await sermonAlreadyExists(id)) {
       continue; // already on the site
     }
 
