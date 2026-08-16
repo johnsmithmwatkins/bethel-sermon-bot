@@ -8,7 +8,8 @@
     "start": "node index.js"
   },
   "dependencies": {
-    "canvas": "^2.11.2"
+    "canvas": "^2.11.2",
+    "openai": "^6.8.1"
   },
   "engines": {
     "node": ">=20"
