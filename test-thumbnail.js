@@ -2,8 +2,8 @@
  * Manual thumbnail test runner.
  * Generates test-thumbnail.jpg only. Does not upload to Wix or change site data.
  *
- * Important: the preacher cutout is made locally with rembg so the real photo
- * is preserved. OpenAI is used only for the scenic background.
+ * Key rule: the preacher is NOT redrawn by OpenAI. We use rembg locally so the
+ * real photo pixels are preserved. OpenAI is only used for the scenic background.
  */
 
 const { createCanvas, loadImage, registerFont } = require('canvas');
@@ -27,13 +27,15 @@ const {
 } = process.env;
 
 if (!PREACHER_IMAGE_URL && !VIDEO_ID) {
-  throw new Error('Provide either PREACHER_IMAGE_URL or VIDEO_ID. PREACHER_IMAGE_URL gives the best result.');
+  throw new Error('Provide either PREACHER_IMAGE_URL or VIDEO_ID. PREACHER_IMAGE_URL gives the best test result.');
 }
 
 const openai = OPENAI_API_KEY ? new OpenAI({ apiKey: OPENAI_API_KEY }) : null;
 
 function tryFont(file, family, weight = 'normal', style = 'normal') {
-  try { if (fs.existsSync(file)) registerFont(file, { family, weight, style }); } catch (_) {}
+  try {
+    if (fs.existsSync(file)) registerFont(file, { family, weight, style });
+  } catch (_) {}
 }
 tryFont('/usr/share/fonts/truetype/liberation2/LiberationSerif-Regular.ttf', 'Bethel Serif');
 tryFont('/usr/share/fonts/truetype/liberation2/LiberationSerif-Bold.ttf', 'Bethel Serif', 'bold');
@@ -62,6 +64,19 @@ const STYLES = {
   },
 };
 
+function run(cmd, args, options = {}) {
+  return new Promise((resolve, reject) => {
+    execFile(cmd, args, { timeout: 420000, ...options }, (error, stdout, stderr) => {
+      if (error) {
+        error.message += `\nCommand: ${cmd} ${args.join(' ')}\nSTDOUT: ${stdout}\nSTDERR: ${stderr}`;
+        reject(error);
+        return;
+      }
+      resolve(stdout.trim());
+    });
+  });
+}
+
 function hashText(text) {
   let h = 0;
   for (const ch of String(text || '')) h = ((h << 5) - h + ch.charCodeAt(0)) | 0;
@@ -73,19 +88,6 @@ function chooseStyle(title) {
   const keys = Object.keys(STYLES);
   const id = keys[hashText(title) % keys.length];
   return { id, ...STYLES[id] };
-}
-
-function run(cmd, args, options = {}) {
-  return new Promise((resolve, reject) => {
-    execFile(cmd, args, { timeout: 300000, ...options }, (error, stdout, stderr) => {
-      if (error) {
-        error.message += `\nCommand: ${cmd} ${args.join(' ')}\nSTDERR: ${stderr}`;
-        reject(error);
-        return;
-      }
-      resolve(stdout.trim());
-    });
-  });
 }
 
 async function youtube(pathAndQuery) {
@@ -110,6 +112,13 @@ function stripVideoTitle(title) {
     .replace(/-\s*Bethel Tabernacle.*$/i, '')
     .replace(/\bLive Stream\b/gi, '')
     .trim();
+}
+
+function normalizeSubtitle(subtitle) {
+  if (!subtitle) return '';
+  const s = String(subtitle).trim();
+  if (/^part\s+/i.test(s)) return s.replace(/^part\s+/i, 'Part ');
+  return s;
 }
 
 function parseDurationSeconds(iso) {
@@ -139,6 +148,7 @@ async function captureVideoFrame(videoId, seconds, fallbackThumbUrl) {
     await fsp.access(out);
     return out;
   } catch (err) {
+    if (!fallbackThumbUrl) throw err;
     console.warn(`Could not capture video frame, using YouTube thumbnail instead. ${err.message}`);
     return downloadImage(fallbackThumbUrl, 'youtube-thumbnail');
   }
@@ -154,18 +164,39 @@ async function getInputPreacherImage(video, fallbackThumbUrl) {
   return captureVideoFrame(VIDEO_ID, seconds, fallbackThumbUrl);
 }
 
+async function getAlphaStats(pngPath) {
+  const img = await loadImage(pngPath);
+  const c = createCanvas(img.width, img.height);
+  const cx = c.getContext('2d');
+  cx.drawImage(img, 0, 0);
+  const d = cx.getImageData(0, 0, img.width, img.height).data;
+  let transparent = 0;
+  let semiOrTransparent = 0;
+  let opaque = 0;
+  const total = img.width * img.height;
+  for (let i = 3; i < d.length; i += 4) {
+    if (d[i] < 10) transparent++;
+    if (d[i] < 250) semiOrTransparent++;
+    if (d[i] > 245) opaque++;
+  }
+  return { total, transparent, semiOrTransparent, opaque, transparentRatio: transparent / total, nonOpaqueRatio: semiOrTransparent / total };
+}
+
 async function makeLocalCutout(inputPath) {
   const out = path.join(process.cwd(), 'preacher-cutout.png');
-  try {
-    console.log('Removing preacher background locally with rembg so the real photo is preserved...');
-    await run('rembg', ['i', '-m', 'isnet-general-use', inputPath, out]);
-    await fsp.access(out);
-    return out;
-  } catch (err) {
-    console.warn(`rembg failed; using original preacher image with background. ${err.message}`);
-    await fsp.copyFile(inputPath, out);
-    return out;
+  console.log('Removing preacher background locally with rembg so the real photo is preserved...');
+
+  // Use python -m rembg so we do not depend on shell PATH behavior in GitHub Actions.
+  await run('python3', ['-m', 'rembg', 'i', inputPath, out]);
+  await fsp.access(out);
+
+  const stats = await getAlphaStats(out);
+  console.log(`Cutout alpha check: transparent ${(stats.transparentRatio * 100).toFixed(1)}%, non-opaque ${(stats.nonOpaqueRatio * 100).toFixed(1)}%.`);
+
+  if (stats.transparentRatio < 0.08 && stats.nonOpaqueRatio < 0.10) {
+    throw new Error('Background removal did not create meaningful transparency. The cutout would still be a rectangle, so stopping instead of making a bad thumbnail.');
   }
+  return out;
 }
 
 async function makeBackground(title, speaker, subtitle, style) {
@@ -208,7 +239,8 @@ function roundRect(ctx, x, y, w, h, r) {
 
 function cover(ctx, img, x, y, w, h, fx = 0.5, fy = 0.5) {
   const s = Math.max(w / img.width, h / img.height);
-  const sw = w / s, sh = h / s;
+  const sw = w / s;
+  const sh = h / s;
   const sx = Math.max(0, Math.min(img.width - sw, img.width * fx - sw / 2));
   const sy = Math.max(0, Math.min(img.height - sh, img.height * fy - sh / 2));
   ctx.drawImage(img, sx, sy, sw, sh, x, y, w, h);
@@ -223,18 +255,30 @@ function alphaTrim(img) {
   for (let y = 0; y < img.height; y++) {
     for (let x = 0; x < img.width; x++) {
       if (d[(y * img.width + x) * 4 + 3] > 12) {
-        minX = Math.min(minX, x); minY = Math.min(minY, y); maxX = Math.max(maxX, x); maxY = Math.max(maxY, y);
+        minX = Math.min(minX, x);
+        minY = Math.min(minY, y);
+        maxX = Math.max(maxX, x);
+        maxY = Math.max(maxY, y);
       }
     }
   }
   if (maxX < minX) return null;
-  return { x: Math.max(0, minX - 6), y: Math.max(0, minY - 6), w: Math.min(img.width - minX, maxX - minX + 13), h: Math.min(img.height - minY, maxY - minY + 13) };
+  return {
+    x: Math.max(0, minX - 8),
+    y: Math.max(0, minY - 8),
+    w: Math.min(img.width - Math.max(0, minX - 8), maxX - minX + 17),
+    h: Math.min(img.height - Math.max(0, minY - 8), maxY - minY + 17),
+  };
 }
 
 function drawCutoutContain(ctx, img, trim, x, y, w, h) {
-  const sx = trim?.x ?? 0, sy = trim?.y ?? 0, sw = trim?.w ?? img.width, sh = trim?.h ?? img.height;
+  const sx = trim?.x ?? 0;
+  const sy = trim?.y ?? 0;
+  const sw = trim?.w ?? img.width;
+  const sh = trim?.h ?? img.height;
   const s = Math.min(w / sw, h / sh);
-  const dw = sw * s, dh = sh * s;
+  const dw = sw * s;
+  const dh = sh * s;
   ctx.drawImage(img, sx, sy, sw, sh, x + (w - dw) / 2, y + h - dh, dw, dh);
 }
 
@@ -244,8 +288,12 @@ function wrapText(ctx, text, maxWidth) {
   let line = '';
   for (const word of words) {
     const test = line ? `${line} ${word}` : word;
-    if (ctx.measureText(test).width > maxWidth && line) { lines.push(line); line = word; }
-    else line = test;
+    if (ctx.measureText(test).width > maxWidth && line) {
+      lines.push(line);
+      line = word;
+    } else {
+      line = test;
+    }
   }
   if (line) lines.push(line);
   return lines;
@@ -257,11 +305,15 @@ function titleCase(name) {
 
 function drawFallbackBackground(ctx, style) {
   const grad = ctx.createLinearGradient(0, 0, 1280, 720);
-  grad.addColorStop(0, '#1a2240'); grad.addColorStop(1, style.outer);
+  grad.addColorStop(0, '#1a2240');
+  grad.addColorStop(1, style.outer);
   ctx.fillStyle = grad;
   ctx.fillRect(0, 0, 1280, 720);
-  ctx.save(); roundRect(ctx, 36, 42, 1208, 636, 30); ctx.clip();
-  ctx.fillStyle = 'rgba(255,255,255,0.08)'; ctx.fillRect(36, 42, 1208, 636);
+  ctx.save();
+  roundRect(ctx, 36, 42, 1208, 636, 30);
+  ctx.clip();
+  ctx.fillStyle = 'rgba(255,255,255,0.08)';
+  ctx.fillRect(36, 42, 1208, 636);
   ctx.restore();
 }
 
@@ -279,23 +331,40 @@ async function compose({ preacherPath, title, speaker, subtitle }) {
 
   if (bgPath) {
     const bg = await loadImage(bgPath);
-    ctx.save(); roundRect(ctx, 36, 42, 1208, 636, 30); ctx.clip(); cover(ctx, bg, 36, 42, 1208, 636); ctx.restore();
+    ctx.save();
+    roundRect(ctx, 36, 42, 1208, 636, 30);
+    ctx.clip();
+    cover(ctx, bg, 36, 42, 1208, 636);
+    ctx.restore();
   } else {
     drawFallbackBackground(ctx, style);
   }
 
-  ctx.save(); roundRect(ctx, 36, 42, 1208, 636, 30); ctx.clip();
-  ctx.fillStyle = style.overlay; ctx.fillRect(36, 42, 1208, 636);
+  ctx.save();
+  roundRect(ctx, 36, 42, 1208, 636, 30);
+  ctx.clip();
+  ctx.fillStyle = style.overlay;
+  ctx.fillRect(36, 42, 1208, 636);
   const shade = ctx.createLinearGradient(36, 0, 780, 0);
-  shade.addColorStop(0, 'rgba(0,0,0,0.30)'); shade.addColorStop(0.7, 'rgba(0,0,0,0.06)'); shade.addColorStop(1, 'rgba(0,0,0,0)');
-  ctx.fillStyle = shade; ctx.fillRect(36, 42, 820, 636);
+  shade.addColorStop(0, 'rgba(0,0,0,0.30)');
+  shade.addColorStop(0.7, 'rgba(0,0,0,0.06)');
+  shade.addColorStop(1, 'rgba(0,0,0,0)');
+  ctx.fillStyle = shade;
+  ctx.fillRect(36, 42, 820, 636);
   ctx.restore();
-  ctx.strokeStyle = 'rgba(255,255,255,0.17)'; ctx.lineWidth = 2; roundRect(ctx, 36, 42, 1208, 636, 30); ctx.stroke();
+  ctx.strokeStyle = 'rgba(255,255,255,0.17)';
+  ctx.lineWidth = 2;
+  roundRect(ctx, 36, 42, 1208, 636, 30);
+  ctx.stroke();
 
   const preacher = await loadImage(cutoutPath);
-  const trim = cutoutPath.endsWith('.png') ? alphaTrim(preacher) : null;
+  const trim = alphaTrim(preacher);
+  if (!trim) throw new Error('Could not find preacher pixels in the transparent cutout.');
   ctx.save();
-  ctx.shadowColor = 'rgba(0,0,0,0.45)'; ctx.shadowBlur = 22; ctx.shadowOffsetX = -7; ctx.shadowOffsetY = 10;
+  ctx.shadowColor = 'rgba(0,0,0,0.45)';
+  ctx.shadowBlur = 22;
+  ctx.shadowOffsetX = -7;
+  ctx.shadowOffsetY = 10;
   drawCutoutContain(ctx, preacher, trim, 710, 42, 570, 700);
   ctx.restore();
 
@@ -320,16 +389,29 @@ async function compose({ preacherPath, title, speaker, subtitle }) {
   }
 
   if (subtitle) {
-    const sub = String(subtitle).replace(/^part\s+/i, 'Part ');
-    ctx.strokeStyle = style.accent; ctx.globalAlpha = 0.86; ctx.lineWidth = 3;
-    ctx.beginPath(); ctx.moveTo(112, y + 12); ctx.lineTo(210, y + 12); ctx.moveTo(475, y + 12); ctx.lineTo(575, y + 12); ctx.stroke(); ctx.globalAlpha = 1;
-    ctx.font = '54px "Bethel Serif", Georgia, serif'; ctx.fillStyle = '#fff';
+    const sub = normalizeSubtitle(subtitle);
+    ctx.strokeStyle = style.accent;
+    ctx.globalAlpha = 0.86;
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.moveTo(112, y + 12);
+    ctx.lineTo(210, y + 12);
+    ctx.moveTo(475, y + 12);
+    ctx.lineTo(575, y + 12);
+    ctx.stroke();
+    ctx.globalAlpha = 1;
+    ctx.font = '54px "Bethel Serif", Georgia, serif';
+    ctx.fillStyle = '#fff';
     ctx.fillText(sub, 232, y + 28);
   }
 
   const tagX = 112, tagY = 595, tagW = 405, tagH = 58;
-  ctx.strokeStyle = '#fff'; ctx.lineWidth = 2.5; roundRect(ctx, tagX, tagY, tagW, tagH, 26); ctx.stroke();
-  ctx.font = '29px "Bethel Sans", Arial, sans-serif'; ctx.letterSpacing = 5; ctx.fillStyle = '#fff';
+  ctx.strokeStyle = '#fff';
+  ctx.lineWidth = 2.5;
+  roundRect(ctx, tagX, tagY, tagW, tagH, 26);
+  ctx.stroke();
+  ctx.font = '29px "Bethel Sans", Arial, sans-serif';
+  ctx.fillStyle = '#fff';
   ctx.fillText('BETHEL TABERNACLE', tagX + 33, tagY + 39);
 
   await fsp.writeFile('test-thumbnail.jpg', canvas.toBuffer('image/jpeg', { quality: 0.94 }));
@@ -346,7 +428,7 @@ async function main() {
   const description = video?.snippet?.description || '';
   const title = TEST_TITLE || lineValue(description, ['Sermon Title', 'Title']) || stripVideoTitle(video?.snippet?.title || 'Sermon');
   const speaker = TEST_SPEAKER || lineValue(description, ['Speaker', 'Preacher', 'Minister']) || 'Bethel Tabernacle';
-  const subtitle = TEST_SUBTITLE || lineValue(description, ['Subtitle', 'Sub Title', 'Part']) || '';
+  const subtitle = normalizeSubtitle(TEST_SUBTITLE || lineValue(description, ['Subtitle', 'Sub Title', 'Part']) || '');
   const thumbs = video?.snippet?.thumbnails || {};
   const fallbackThumbUrl = (thumbs.maxres || thumbs.standard || thumbs.high || thumbs.medium || thumbs.default || {}).url;
 
@@ -359,4 +441,7 @@ async function main() {
   console.log('Created test-thumbnail.jpg, preacher-cutout.png, and ai-background.png if OpenAI background succeeded.');
 }
 
-main().catch((err) => { console.error(err); process.exit(1); });
+main().catch((err) => {
+  console.error(err);
+  process.exit(1);
+});
