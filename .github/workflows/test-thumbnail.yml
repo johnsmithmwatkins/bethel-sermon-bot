@@ -4,8 +4,12 @@ on:
   workflow_dispatch:
     inputs:
       video_id:
-        description: 'YouTube video ID to test, for example the part after v= in the URL'
-        required: true
+        description: 'Optional YouTube video ID. Leave blank if using preacher_image_url only.'
+        required: false
+        type: string
+      preacher_image_url:
+        description: 'Direct URL to preacher screenshot image. Best test option.'
+        required: false
         type: string
       title:
         description: 'Optional override sermon title'
@@ -46,6 +50,7 @@ jobs:
           YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           VIDEO_ID: ${{ inputs.video_id }}
+          PREACHER_IMAGE_URL: ${{ inputs.preacher_image_url }}
           TEST_TITLE: ${{ inputs.title }}
           TEST_SPEAKER: ${{ inputs.speaker }}
           TEST_SUBTITLE: ${{ inputs.subtitle }}
