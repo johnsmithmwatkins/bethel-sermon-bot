@@ -1,0 +1,57 @@
+name: Test sermon thumbnail
+
+on:
+  workflow_dispatch:
+    inputs:
+      video_id:
+        description: 'YouTube video ID to test, for example the part after v= in the URL'
+        required: true
+        type: string
+      title:
+        description: 'Optional override sermon title'
+        required: false
+        type: string
+      speaker:
+        description: 'Optional override speaker name'
+        required: false
+        type: string
+      subtitle:
+        description: 'Optional subtitle, for example Part Two'
+        required: false
+        type: string
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install video tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg python3-pip
+          python3 -m pip install --user --upgrade yt-dlp
+          echo "$HOME/.local/bin" >> $GITHUB_PATH
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Generate test thumbnail
+        run: node test-thumbnail.js
+        env:
+          YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          VIDEO_ID: ${{ inputs.video_id }}
+          TEST_TITLE: ${{ inputs.title }}
+          TEST_SPEAKER: ${{ inputs.speaker }}
+          TEST_SUBTITLE: ${{ inputs.subtitle }}
+
+      - name: Upload test thumbnail artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-thumbnail
+          path: test-thumbnail.jpg
