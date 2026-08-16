@@ -1,6 +1,10 @@
 /**
  * Manual thumbnail test runner.
  * Generates test-thumbnail.jpg only. Does not upload to Wix or change site data.
+ *
+ * Best test path:
+ *   - Provide PREACHER_IMAGE_URL, TEST_TITLE, TEST_SPEAKER, and optional TEST_SUBTITLE.
+ *   - VIDEO_ID is optional and only used as a fallback metadata/frame source.
  */
 
 const { createCanvas, loadImage, registerFont } = require('canvas');
@@ -13,13 +17,15 @@ const {
   YOUTUBE_API_KEY,
   OPENAI_API_KEY,
   VIDEO_ID,
+  PREACHER_IMAGE_URL,
   TEST_TITLE,
   TEST_SPEAKER,
   TEST_SUBTITLE,
 } = process.env;
 
-if (!YOUTUBE_API_KEY) throw new Error('Missing YOUTUBE_API_KEY secret.');
-if (!VIDEO_ID) throw new Error('Missing VIDEO_ID input.');
+if (!PREACHER_IMAGE_URL && !VIDEO_ID) {
+  throw new Error('Provide either PREACHER_IMAGE_URL or VIDEO_ID. For best testing, use PREACHER_IMAGE_URL.');
+}
 
 registerFont(path.join(__dirname, 'assets', 'DejaVuSans-Bold.ttf'), { family: 'Bethel Bold' });
 registerFont(path.join(__dirname, 'assets', 'DejaVuSans.ttf'), { family: 'Bethel Regular' });
@@ -38,6 +44,7 @@ function run(cmd, args, options = {}) {
 }
 
 async function youtube(pathAndQuery) {
+  if (!YOUTUBE_API_KEY) throw new Error('Missing YOUTUBE_API_KEY secret.');
   const url = `https://www.googleapis.com/youtube/v3/${pathAndQuery}&key=${YOUTUBE_API_KEY}`;
   const res = await fetch(url);
   if (!res.ok) throw new Error(`YouTube API error ${res.status}: ${await res.text()}`);
@@ -79,28 +86,42 @@ function parseTimestamp(text) {
 }
 
 function getPreachingStartSeconds(video) {
-  const description = video.snippet.description || '';
+  const description = (video && video.snippet && video.snippet.description) || '';
   const explicit = lineValue(description, ['Preaching Starts', 'Preaching Start', 'Sermon Starts', 'Sermon Start', 'Message Starts', 'Message Start']);
   const parsed = parseTimestamp(explicit);
   if (parsed !== null) return parsed;
-  const duration = parseDurationSeconds(video.contentDetails && video.contentDetails.duration);
+  const duration = parseDurationSeconds(video && video.contentDetails && video.contentDetails.duration);
   if (duration && duration > 0) return Math.min(Math.max(Math.round(duration * 0.42), 1800), 3900);
   return 2700;
 }
 
 function getDisplayData(video) {
-  const description = video.snippet.description || '';
+  const description = (video && video.snippet && video.snippet.description) || '';
   return {
-    title: TEST_TITLE || lineValue(description, ['Sermon Title', 'Title']) || stripVideoTitle(video.snippet.title),
+    title: TEST_TITLE || lineValue(description, ['Sermon Title', 'Title']) || stripVideoTitle(video && video.snippet && video.snippet.title),
     speaker: TEST_SPEAKER || lineValue(description, ['Speaker', 'Preacher', 'Minister']) || 'Bethel Tabernacle',
     subtitle: TEST_SUBTITLE || lineValue(description, ['Subtitle', 'Sub Title', 'Part']) || '',
   };
 }
 
-async function captureVideoFrame(videoId, seconds, fallbackThumbUrl) {
+async function downloadImage(url, outputPath) {
+  const res = await fetch(url, { redirect: 'follow' });
+  if (!res.ok) throw new Error(`Could not download preacher image URL. HTTP ${res.status}: ${await res.text()}`);
+  await fs.writeFile(outputPath, Buffer.from(await res.arrayBuffer()));
+  return outputPath;
+}
+
+async function getPreacherImagePath(video, fallbackThumbUrl) {
   const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'bethel-thumb-test-'));
-  const output = path.join(tmpDir, `${videoId}.jpg`);
-  const videoUrl = `https://www.youtube.com/watch?v=${videoId}`;
+  const output = path.join(tmpDir, 'preacher.jpg');
+
+  if (PREACHER_IMAGE_URL) {
+    console.log('Using provided preacher_image_url instead of pulling from YouTube.');
+    return downloadImage(PREACHER_IMAGE_URL, output);
+  }
+
+  const videoUrl = `https://www.youtube.com/watch?v=${VIDEO_ID}`;
+  const seconds = getPreachingStartSeconds(video);
   try {
     console.log(`Capturing preacher frame around ${seconds}s...`);
     const mediaUrls = await run('yt-dlp', ['-f', 'bv*[height<=720]/b[height<=720]/best', '-g', videoUrl]);
@@ -111,10 +132,7 @@ async function captureVideoFrame(videoId, seconds, fallbackThumbUrl) {
     return output;
   } catch (err) {
     console.warn(`Could not capture video frame, using YouTube thumbnail instead. ${err.message}`);
-    const res = await fetch(fallbackThumbUrl);
-    if (!res.ok) throw new Error(`Could not download fallback thumbnail: ${res.status}`);
-    await fs.writeFile(output, Buffer.from(await res.arrayBuffer()));
-    return output;
+    return downloadImage(fallbackThumbUrl, output);
   }
 }
 
@@ -158,6 +176,7 @@ function drawFallbackBackground(ctx, palette, title) {
   const h = 720;
   ctx.fillStyle = palette.outer;
   ctx.fillRect(0, 0, w, h);
+
   const gx = ctx.createLinearGradient(0, 40, 0, h - 40);
   gx.addColorStop(0, palette.top);
   gx.addColorStop(0.58, palette.mid);
@@ -165,6 +184,7 @@ function drawFallbackBackground(ctx, palette, title) {
   roundRect(ctx, 38, 46, 1204, 628, 28);
   ctx.fillStyle = gx;
   ctx.fill();
+
   ctx.save();
   roundRect(ctx, 38, 46, 1204, 628, 28);
   ctx.clip();
@@ -191,6 +211,7 @@ function drawFallbackBackground(ctx, palette, title) {
 
 async function generateOpenAIBackground({ title, subtitle, speaker, palette }) {
   if (!OPENAI_API_KEY) return null;
+
   const prompt = [
     'Create a beautiful 16:9 sermon thumbnail background only.',
     'No people, no faces, no text, no letters, no words, no logos, no watermark.',
@@ -199,15 +220,18 @@ async function generateOpenAIBackground({ title, subtitle, speaker, palette }) {
     `Theme title: ${title}. Speaker: ${speaker}. ${subtitle ? `Subtitle: ${subtitle}.` : ''}`,
     'Keep the left half cleaner and darker for title text, and the right side suitable for a preacher image.',
   ].join(' ');
+
   const res = await fetch('https://api.openai.com/v1/images/generations', {
     method: 'POST',
     headers: { Authorization: `Bearer ${OPENAI_API_KEY}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({ model: 'gpt-image-2', prompt, size: '1536x1024' }),
   });
+
   if (!res.ok) {
     console.warn(`OpenAI image generation failed (${res.status}). Falling back. ${await res.text()}`);
     return null;
   }
+
   const json = await res.json();
   const b64 = json && json.data && json.data[0] && json.data[0].b64_json;
   return b64 ? Buffer.from(b64, 'base64') : null;
@@ -238,6 +262,7 @@ async function buildThumbnail({ video, title, subtitle, speaker, fallbackThumbUr
   const canvas = createCanvas(1280, 720);
   const ctx = canvas.getContext('2d');
   const palette = paletteFor(title);
+
   ctx.fillStyle = palette.outer;
   ctx.fillRect(0, 0, 1280, 720);
 
@@ -249,19 +274,28 @@ async function buildThumbnail({ video, title, subtitle, speaker, fallbackThumbUr
     ctx.clip();
     drawCoverImage(ctx, bg, 38, 46, 1204, 628, 0.52, 0.48);
     ctx.restore();
-    ctx.fillStyle = 'rgba(7, 12, 22, 0.56)';
-    ctx.fillRect(38, 46, 700, 628);
+
+    const overlay = ctx.createLinearGradient(38, 0, 820, 0);
+    overlay.addColorStop(0, 'rgba(7, 12, 22, 0.78)');
+    overlay.addColorStop(0.55, 'rgba(7, 12, 22, 0.50)');
+    overlay.addColorStop(1, 'rgba(7, 12, 22, 0.05)');
+    ctx.save();
+    roundRect(ctx, 38, 46, 1204, 628, 28);
+    ctx.clip();
+    ctx.fillStyle = overlay;
+    ctx.fillRect(38, 46, 1204, 628);
+    ctx.restore();
   } else {
     drawFallbackBackground(ctx, palette, title);
   }
 
-  const framePath = await captureVideoFrame(video.id, getPreachingStartSeconds(video), fallbackThumbUrl);
+  const framePath = await getPreacherImagePath(video, fallbackThumbUrl);
   const frame = await loadImage(framePath);
   const px = 735, py = 65, pw = 520, ph = 640;
   ctx.save();
   roundRect(ctx, px, py, pw, ph, 24);
   ctx.clip();
-  drawCoverImage(ctx, frame, px, py, pw, ph, 0.58, 0.38);
+  drawCoverImage(ctx, frame, px, py, pw, ph, 0.55, 0.35);
   ctx.restore();
 
   const sideBlend = ctx.createLinearGradient(660, 0, 825, 0);
@@ -270,7 +304,7 @@ async function buildThumbnail({ video, title, subtitle, speaker, fallbackThumbUr
   ctx.fillStyle = sideBlend;
   ctx.fillRect(650, 46, 200, 628);
 
-  ctx.fillStyle = 'rgba(255,255,255,0.95)';
+  ctx.fillStyle = 'rgba(255,255,255,0.96)';
   ctx.font = '30px "Bethel Regular"';
   ctx.fillText(titleCaseName(speaker), 126, 140);
 
@@ -316,22 +350,30 @@ async function buildThumbnail({ video, title, subtitle, speaker, fallbackThumbUr
 
 async function main() {
   console.log('Running safe test thumbnail workflow. Wix will not be touched.');
-  const data = await youtube(`videos?part=snippet,contentDetails&id=${VIDEO_ID}`);
-  const video = data.items && data.items[0];
-  if (!video) throw new Error(`Could not find YouTube video: ${VIDEO_ID}`);
-  const { title, speaker, subtitle } = getDisplayData(video);
-  console.log(`Using title: ${title}`);
-  console.log(`Using speaker: ${speaker}`);
-  if (subtitle) console.log(`Using subtitle: ${subtitle}`);
 
-  const thumbs = video.snippet.thumbnails || {};
-  const sourceThumb = (thumbs.maxres || thumbs.standard || thumbs.high || thumbs.medium || thumbs.default).url;
-  const jpegBuffer = await buildThumbnail({ video, title, subtitle, speaker, fallbackThumbUrl: sourceThumb });
-  await fs.writeFile('test-thumbnail.jpg', jpegBuffer);
+  let video = null;
+  let fallbackThumbUrl = PREACHER_IMAGE_URL;
+
+  if (VIDEO_ID) {
+    const data = await youtube(`videos?part=snippet,contentDetails&id=${VIDEO_ID}`);
+    video = data.items && data.items[0];
+    if (video) {
+      const thumbs = video.snippet.thumbnails || {};
+      fallbackThumbUrl = (thumbs.maxres || thumbs.standard || thumbs.high || thumbs.medium || thumbs.default || {}).url || fallbackThumbUrl;
+    }
+  }
+
+  const { title, speaker, subtitle } = getDisplayData(video);
+  console.log(`Title: ${title}`);
+  console.log(`Speaker: ${speaker}`);
+  if (subtitle) console.log(`Subtitle: ${subtitle}`);
+
+  const jpeg = await buildThumbnail({ video, title, subtitle, speaker, fallbackThumbUrl });
+  await fs.writeFile('test-thumbnail.jpg', jpeg);
   console.log('Created test-thumbnail.jpg');
 }
 
 main().catch((err) => {
-  console.error('Fatal error:', err);
+  console.error(err);
   process.exit(1);
 });
