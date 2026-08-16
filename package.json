@@ -1,0 +1,16 @@
+{
+  "name": "bethel-sermon-bot",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Automatically detects new Bethel Tabernacle sermon uploads on YouTube, builds a thumbnail, and adds them to the bethel-tab.com Sermons page.",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "canvas": "^2.11.2"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
