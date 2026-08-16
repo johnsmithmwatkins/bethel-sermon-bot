@@ -11,7 +11,12 @@
  *   Speaker: Jason Watkins
  *   Sermon Title: From Earth to the Open Door
  *   Subtitle: Part Two
+ *
+ * Optional line:
  *   Preaching Starts: 42:15
+ *
+ * If no preaching-start timestamp is provided, the bot guesses a good frame
+ * later in the sermon.
  */
 
 const { createCanvas, loadImage, registerFont } = require('canvas');
@@ -20,9 +25,20 @@ const fs = require('fs/promises');
 const os = require('os');
 const path = require('path');
 
-const { YOUTUBE_API_KEY, YOUTUBE_CHANNEL_ID, WIX_API_KEY, WIX_SITE_ID } = process.env;
+const {
+  YOUTUBE_API_KEY,
+  YOUTUBE_CHANNEL_ID,
+  WIX_API_KEY,
+  WIX_SITE_ID,
+  OPENAI_API_KEY,
+} = process.env;
 
-for (const [key, value] of Object.entries({ YOUTUBE_API_KEY, YOUTUBE_CHANNEL_ID, WIX_API_KEY, WIX_SITE_ID })) {
+for (const [key, value] of Object.entries({
+  YOUTUBE_API_KEY,
+  YOUTUBE_CHANNEL_ID,
+  WIX_API_KEY,
+  WIX_SITE_ID,
+})) {
   if (!value) {
     console.error(`Missing required secret: ${key}. Add it under Settings > Secrets and variables > Actions.`);
     process.exit(1);
@@ -172,6 +188,21 @@ function parseDurationSeconds(isoDuration) {
   return (parseInt(match[1] || '0', 10) * 3600) + (parseInt(match[2] || '0', 10) * 60) + parseInt(match[3] || '0', 10);
 }
 
+function normalizePartWord(n) {
+  return ({
+    1: 'One',
+    2: 'Two',
+    3: 'Three',
+    4: 'Four',
+    5: 'Five',
+    6: 'Six',
+    7: 'Seven',
+    8: 'Eight',
+    9: 'Nine',
+    10: 'Ten',
+  }[n] || String(n));
+}
+
 function getDisplayData(video) {
   const description = video.snippet.description || '';
   const rawTitle = lineValue(description, ['Sermon Title', 'Title']) || stripVideoTitle(video.snippet.title || 'Sermon');
@@ -181,7 +212,7 @@ function getDisplayData(video) {
   const partInTitle = rawTitle.match(/\b(Part\s+(?:One|Two|Three|Four|Five|Six|Seven|Eight|Nine|Ten|\d+))\b/i);
   let title = rawTitle;
   if (!subtitle && partInTitle) {
-    subtitle = partInTitle[1].replace(/\b\d+\b/, (n) => ({ 1: 'One', 2: 'Two', 3: 'Three', 4: 'Four', 5: 'Five' }[n] || n));
+    subtitle = partInTitle[1].replace(/\b(\d+)\b/, (_, n) => normalizePartWord(parseInt(n, 10)));
     title = rawTitle.replace(partInTitle[0], '').replace(/[-–—:]+\s*$/, '').trim();
   }
   if (subtitle && !/^part\b/i.test(subtitle)) subtitle = `Part ${subtitle}`;
@@ -195,8 +226,6 @@ function getPreachingStartSeconds(video) {
   const parsed = parseTimestamp(explicit);
   if (parsed !== null) return parsed;
 
-  // Fallback: if no timestamp is supplied, grab a frame from roughly the middle
-  // of the sermon, but not too far in.
   const duration = parseDurationSeconds(video.contentDetails && video.contentDetails.duration);
   if (duration && duration > 0) return Math.min(Math.max(Math.round(duration * 0.42), 1800), 3900);
   return 2700;
@@ -259,7 +288,7 @@ function drawCoverImage(ctx, img, x, y, w, h, focalX = 0.5, focalY = 0.5) {
   ctx.drawImage(img, sx, sy, sw, sh, x, y, w, h);
 }
 
-function drawNatureBackground(ctx, palette, title) {
+function drawFallbackBackground(ctx, palette, title) {
   const w = 1280;
   const h = 720;
   ctx.fillStyle = palette.outer;
@@ -277,7 +306,6 @@ function drawNatureBackground(ctx, palette, title) {
   roundRect(ctx, 38, 46, 1204, 628, 28);
   ctx.clip();
 
-  // Snowy mountain silhouettes
   const mountainSets = [
     { y: 330, color: 'rgba(255,255,255,0.22)', peaks: [80, 250, 420, 610, 800, 1030, 1240] },
     { y: 390, color: 'rgba(0,0,0,0.35)', peaks: [0, 180, 350, 560, 740, 930, 1160, 1280] },
@@ -296,20 +324,65 @@ function drawNatureBackground(ctx, palette, title) {
     ctx.fill();
   }
 
-  // Lake/forest dark base
   const lake = ctx.createLinearGradient(0, 455, 0, h);
   lake.addColorStop(0, 'rgba(20, 70, 95, 0.35)');
   lake.addColorStop(1, 'rgba(2, 8, 18, 0.78)');
   ctx.fillStyle = lake;
   ctx.fillRect(0, 455, w, 300);
 
-  // Dark vignette for readable title
   const vg = ctx.createRadialGradient(820, 325, 160, 620, 370, 820);
   vg.addColorStop(0, 'rgba(0,0,0,0.05)');
   vg.addColorStop(1, 'rgba(0,0,0,0.62)');
   ctx.fillStyle = vg;
   ctx.fillRect(0, 46, w, 628);
   ctx.restore();
+}
+
+async function generateOpenAIBackground({ title, subtitle, speaker, palette }) {
+  if (!OPENAI_API_KEY) return null;
+
+  const prompt = [
+    'Create a beautiful 16:9 sermon thumbnail background only.',
+    'No people, no faces, no text, no letters, no words, no logos, no watermark.',
+    'Style: elegant Christian sermon promo background, cinematic and peaceful, suitable for Bethel Tabernacle.',
+    'Scene: majestic mountains, lake or valley, soft atmospheric depth, tasteful clouds, sunrise or sunset glow.',
+    `Primary color mood should harmonize with these colors: ${palette.top}, ${palette.mid}, ${palette.bottom}.`,
+    `The sermon title is "${title}"${subtitle ? ` with subtitle "${subtitle}"` : ''} and the speaker is "${speaker}", so the background should feel reverent, calm, and inspiring.`,
+    'Keep the left half visually cleaner and darker for title text readability, and keep the right side suitable for compositing a preacher cutout.',
+    'Modern polished YouTube thumbnail aesthetic.',
+  ].join(' ');
+
+  try {
+    const res = await fetch('https://api.openai.com/v1/images/generations', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${OPENAI_API_KEY}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: 'gpt-image-2',
+        prompt,
+        size: '1536x1024',
+      }),
+    });
+
+    if (!res.ok) {
+      const text = await res.text();
+      console.warn(`  ! OpenAI image generation failed (${res.status}). Falling back to built-in background. ${text}`);
+      return null;
+    }
+
+    const json = await res.json();
+    const b64 = json && json.data && json.data[0] && json.data[0].b64_json;
+    if (!b64) {
+      console.warn('  ! OpenAI returned no image data. Falling back to built-in background.');
+      return null;
+    }
+    return Buffer.from(b64, 'base64');
+  } catch (err) {
+    console.warn(`  ! OpenAI image generation threw an error. Falling back to built-in background. ${err.message}`);
+    return null;
+  }
 }
 
 function wrapText(ctx, text, maxWidth) {
@@ -337,13 +410,41 @@ async function buildDesignedThumbnail({ video, title, subtitle, speaker, fallbac
   const canvas = createCanvas(1280, 720);
   const ctx = canvas.getContext('2d');
   const palette = paletteFor(title);
-  drawNatureBackground(ctx, palette, title);
+
+  ctx.fillStyle = palette.outer;
+  ctx.fillRect(0, 0, 1280, 720);
+
+  const bgBuffer = await generateOpenAIBackground({ title, subtitle, speaker, palette });
+  if (bgBuffer) {
+    const bg = await loadImage(bgBuffer);
+    ctx.save();
+    roundRect(ctx, 38, 46, 1204, 628, 28);
+    ctx.clip();
+    drawCoverImage(ctx, bg, 38, 46, 1204, 628, 0.52, 0.48);
+    ctx.restore();
+
+    ctx.strokeStyle = 'rgba(255,255,255,0.18)';
+    ctx.lineWidth = 2;
+    roundRect(ctx, 38, 46, 1204, 628, 28);
+    ctx.stroke();
+
+    const overlay = ctx.createLinearGradient(70, 0, 860, 0);
+    overlay.addColorStop(0, 'rgba(7, 12, 22, 0.78)');
+    overlay.addColorStop(0.45, 'rgba(8, 13, 24, 0.48)');
+    overlay.addColorStop(1, 'rgba(8, 13, 24, 0.08)');
+    ctx.save();
+    roundRect(ctx, 38, 46, 1204, 628, 28);
+    ctx.clip();
+    ctx.fillStyle = overlay;
+    ctx.fillRect(38, 46, 1204, 628);
+    ctx.restore();
+  } else {
+    drawFallbackBackground(ctx, palette, title);
+  }
 
   const framePath = await captureVideoFrame(video.id, getPreachingStartSeconds(video), fallbackThumbUrl);
   const frame = await loadImage(framePath);
 
-  // Right-side preacher panel. This is intentionally a stylized crop of the
-  // actual sermon frame, so the thumbnail uses the real preacher moment.
   const px = 735;
   const py = 65;
   const pw = 520;
@@ -351,42 +452,43 @@ async function buildDesignedThumbnail({ video, title, subtitle, speaker, fallbac
   ctx.save();
   roundRect(ctx, px, py, pw, ph, 24);
   ctx.clip();
-  drawCoverImage(ctx, frame, px, py, pw, ph, 0.55, 0.42);
-  ctx.fillStyle = 'rgba(7, 14, 24, 0.08)';
+  drawCoverImage(ctx, frame, px, py, pw, ph, 0.58, 0.38);
+  ctx.fillStyle = 'rgba(7, 14, 24, 0.06)';
   ctx.fillRect(px, py, pw, ph);
   ctx.restore();
 
-  // Soft blend where preacher meets background
-  const sideBlend = ctx.createLinearGradient(690, 0, 820, 0);
-  sideBlend.addColorStop(0, 'rgba(8, 13, 28, 0.9)');
+  ctx.strokeStyle = 'rgba(255,255,255,0.18)';
+  ctx.lineWidth = 2;
+  roundRect(ctx, px, py, pw, ph, 24);
+  ctx.stroke();
+
+  const sideBlend = ctx.createLinearGradient(680, 0, 825, 0);
+  sideBlend.addColorStop(0, 'rgba(8, 13, 28, 0.94)');
   sideBlend.addColorStop(1, 'rgba(8, 13, 28, 0)');
   ctx.fillStyle = sideBlend;
-  ctx.fillRect(670, 46, 190, 628);
+  ctx.fillRect(660, 46, 190, 628);
 
-  // Speaker name
   ctx.fillStyle = 'rgba(255,255,255,0.95)';
   ctx.font = '30px "Bethel Regular"';
   ctx.fillText(titleCaseName(speaker), 126, 140);
 
-  // Main title
-  let fontSize = title.length > 34 ? 76 : 88;
+  let fontSize = title.length > 36 ? 72 : 86;
   let lines;
   do {
     ctx.font = `${fontSize}px "Bethel Regular"`;
     lines = wrapText(ctx, title, 610);
     if (lines.length > 4) fontSize -= 4;
-  } while (lines.length > 4 && fontSize > 46);
+  } while (lines.length > 4 && fontSize > 44);
 
   ctx.fillStyle = '#ffffff';
   ctx.textBaseline = 'alphabetic';
-  let y = subtitle ? 285 : 315;
+  let y = subtitle ? 285 : 320;
   const gap = fontSize * 0.98;
   for (const line of lines) {
     ctx.fillText(line, 126, y);
     y += gap;
   }
 
-  // Optional subtitle/part line
   if (subtitle) {
     const subText = subtitle.replace(/\bpart\b/i, 'Part');
     const sx = 126;
@@ -404,7 +506,6 @@ async function buildDesignedThumbnail({ video, title, subtitle, speaker, fallbac
     ctx.fillText(subText.toUpperCase(), sx + 28, sy);
   }
 
-  // Church tag
   const tagX = 126;
   const tagY = 615;
   const tagW = 430;
@@ -421,7 +522,11 @@ async function buildDesignedThumbnail({ video, title, subtitle, speaker, fallbac
 }
 
 async function main() {
-  console.log('Checking for new Bethel Tabernacle sermons with designed thumbnail builder...');
+  console.log('Checking for new Bethel Tabernacle sermons with AI-style thumbnail builder...');
+  if (!OPENAI_API_KEY) {
+    console.log('OPENAI_API_KEY not found. The script will use the built-in scenic background fallback.');
+  }
+
   const playlistId = await getUploadsPlaylistId();
   const videoIds = await getRecentVideoIds(playlistId);
   const videos = await getVideoDetails(videoIds);
