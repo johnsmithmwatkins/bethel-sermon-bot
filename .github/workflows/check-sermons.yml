@@ -1,0 +1,28 @@
+name: Check for new sermons
+
+on:
+  schedule:
+    # Runs at 15 minutes past every hour, all day, every day (UTC).
+    - cron: '15 * * * *'
+  workflow_dispatch: {} # lets you trigger it manually from the Actions tab, for testing
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Run sermon checker
+        run: node index.js
+        env:
+          YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
+          YOUTUBE_CHANNEL_ID: ${{ secrets.YOUTUBE_CHANNEL_ID }}
+          WIX_API_KEY: ${{ secrets.WIX_API_KEY }}
+          WIX_SITE_ID: ${{ secrets.WIX_SITE_ID }}
