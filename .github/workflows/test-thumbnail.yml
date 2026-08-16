@@ -23,6 +23,16 @@ on:
         description: 'Optional subtitle, for example Part Two'
         required: false
         type: string
+      style_mode:
+        description: 'Optional style: purple_mountain, forest_green, blue_lake, or warm_tan. Leave blank for auto.'
+        required: false
+        type: choice
+        options:
+          - ''
+          - purple_mountain
+          - forest_green
+          - blue_lake
+          - warm_tan
 
 jobs:
   test:
@@ -34,10 +44,10 @@ jobs:
         with:
           node-version: '20'
 
-      - name: Install video tools
+      - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y ffmpeg python3-pip
+          sudo apt-get install -y ffmpeg python3-pip fonts-liberation
           python3 -m pip install --user --upgrade yt-dlp
           echo "$HOME/.local/bin" >> $GITHUB_PATH
 
@@ -54,9 +64,13 @@ jobs:
           TEST_TITLE: ${{ inputs.title }}
           TEST_SPEAKER: ${{ inputs.speaker }}
           TEST_SUBTITLE: ${{ inputs.subtitle }}
+          STYLE_MODE: ${{ inputs.style_mode }}
 
       - name: Upload test thumbnail artifact
         uses: actions/upload-artifact@v4
         with:
           name: test-thumbnail
-          path: test-thumbnail.jpg
+          path: |
+            test-thumbnail.jpg
+            preacher-cutout.png
+            ai-background.png
