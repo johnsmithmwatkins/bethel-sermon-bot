@@ -48,10 +48,12 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y ffmpeg python3-pip fonts-liberation
-          python3 -m pip install --user --upgrade yt-dlp "rembg[cpu]" filetype watchdog aiohttp pillow onnxruntime
+          python3 -m pip install --user --upgrade yt-dlp "rembg[cpu]" pillow onnxruntime
           echo "$HOME/.local/bin" >> $GITHUB_PATH
-          which rembg
-          rembg --help >/dev/null
+          python3 - <<'PY'
+          from rembg import remove
+          print('rembg API import ok')
+          PY
 
       - name: Install dependencies
         run: npm install
