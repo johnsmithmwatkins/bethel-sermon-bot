@@ -2,8 +2,9 @@
  * Manual thumbnail test runner.
  * Generates test-thumbnail.jpg only. Does not upload to Wix or change site data.
  *
- * Key rule: the preacher is NOT redrawn by OpenAI. We use rembg locally so the
- * real photo pixels are preserved. OpenAI is only used for the scenic background.
+ * The preacher is NOT redrawn by OpenAI. OpenAI is only used for the scenic
+ * background. The preacher cutout is made locally with rembg's Python API so
+ * the real photo pixels are preserved.
  */
 
 const { createCanvas, loadImage, registerFont } = require('canvas');
@@ -47,19 +48,19 @@ tryFont(path.join(__dirname, 'assets', 'DejaVuSans-Bold.ttf'), 'Bethel Sans Fall
 
 const STYLES = {
   purple_mountain: {
-    outer: '#62547d', overlay: 'rgba(65,50,105,0.56)', accent: '#cbb8ff',
+    outer: '#62547d', overlay: 'rgba(65,50,105,0.50)', accent: '#cbb8ff',
     prompt: 'purple mountain style, soft lavender and blue color grade, snowy mountain backdrop, rounded translucent panel, elegant premium church thumbnail',
   },
   forest_green: {
-    outer: '#0b526f', overlay: 'rgba(8,24,30,0.44)', accent: '#dcefff',
+    outer: '#0b526f', overlay: 'rgba(8,24,30,0.40)', accent: '#dcefff',
     prompt: 'deep forest green and blue mountain style, tall evergreen forest, strong scenic depth, premium sermon thumbnail',
   },
   blue_lake: {
-    outer: '#08739d', overlay: 'rgba(13,56,88,0.43)', accent: '#c7e9ff',
+    outer: '#08739d', overlay: 'rgba(13,56,88,0.38)', accent: '#c7e9ff',
     prompt: 'cool blue lake style, calm mountain lake, misty blue valley, clean classic sermon thumbnail',
   },
   warm_tan: {
-    outer: '#8a6745', overlay: 'rgba(177,130,75,0.50)', accent: '#ffe1aa',
+    outer: '#8a6745', overlay: 'rgba(177,130,75,0.42)', accent: '#ffe1aa',
     prompt: 'warm tan and gold style, soft autumn mountain edges, premium beige panel, gentle church thumbnail',
   },
 };
@@ -172,22 +173,26 @@ async function getAlphaStats(pngPath) {
   const d = cx.getImageData(0, 0, img.width, img.height).data;
   let transparent = 0;
   let semiOrTransparent = 0;
-  let opaque = 0;
   const total = img.width * img.height;
   for (let i = 3; i < d.length; i += 4) {
     if (d[i] < 10) transparent++;
     if (d[i] < 250) semiOrTransparent++;
-    if (d[i] > 245) opaque++;
   }
-  return { total, transparent, semiOrTransparent, opaque, transparentRatio: transparent / total, nonOpaqueRatio: semiOrTransparent / total };
+  return { total, transparent, semiOrTransparent, transparentRatio: transparent / total, nonOpaqueRatio: semiOrTransparent / total };
 }
 
 async function makeLocalCutout(inputPath) {
   const out = path.join(process.cwd(), 'preacher-cutout.png');
-  console.log('Removing preacher background locally with rembg so the real photo is preserved...');
+  console.log('Removing preacher background locally with rembg Python API so the real photo is preserved...');
 
-  // Use python -m rembg so we do not depend on shell PATH behavior in GitHub Actions.
-  await run('python3', ['-m', 'rembg', 'i', inputPath, out]);
+  const py = `
+from pathlib import Path
+import sys
+from rembg import remove
+inp, outp = sys.argv[1], sys.argv[2]
+Path(outp).write_bytes(remove(Path(inp).read_bytes()))
+`;
+  await run('python3', ['-c', py, inputPath, out]);
   await fsp.access(out);
 
   const stats = await getAlphaStats(out);
@@ -204,7 +209,7 @@ async function makeBackground(title, speaker, subtitle, style) {
   const prompt = [
     'Create a beautiful 16:9 sermon thumbnail background only. No people, no faces, no text, no letters, no logos, no watermark.',
     'Use this Bethel Tabernacle established style:', style.prompt + '.',
-    'The design should look like a premium church YouTube thumbnail: scenic nature background, rounded main panel, soft color grading, elegant atmosphere, and readable negative space on the left for large sermon title text.',
+    'Premium church YouTube thumbnail background: scenic nature, rounded card/panel feel, soft color grade, elegant atmosphere, readable negative space on the left for large sermon title text.',
     'Leave visual room on the right for a preacher cutout. Use mountains, forest, lake, valley, mist, or sunrise/sunset glow. Fresh design, not a copy.',
     `Sermon title mood: ${title}. Speaker: ${speaker}. ${subtitle ? `Subtitle: ${subtitle}.` : ''}`,
   ].join(' ');
@@ -365,7 +370,7 @@ async function compose({ preacherPath, title, speaker, subtitle }) {
   ctx.shadowBlur = 22;
   ctx.shadowOffsetX = -7;
   ctx.shadowOffsetY = 10;
-  drawCutoutContain(ctx, preacher, trim, 710, 42, 570, 700);
+  drawCutoutContain(ctx, preacher, trim, 700, 34, 600, 704);
   ctx.restore();
 
   ctx.fillStyle = '#fff';
