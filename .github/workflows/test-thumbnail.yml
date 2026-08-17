@@ -50,7 +50,8 @@ jobs:
           sudo apt-get install -y ffmpeg python3-pip fonts-liberation
           python3 -m pip install --user --upgrade yt-dlp "rembg[cpu]" pillow onnxruntime
           echo "$HOME/.local/bin" >> $GITHUB_PATH
-          python3 -m rembg --help >/dev/null
+          which rembg
+          rembg --help >/dev/null
 
       - name: Install dependencies
         run: npm install
