@@ -23,8 +23,7 @@ const {
   DRY_RUN,
 } = process.env;
 
-const REQUIRED = { WIX_API_KEY, WIX_SITE_ID, OPENAI_API_KEY };
-for (const [key, value] of Object.entries(REQUIRED)) {
+for (const [key, value] of Object.entries({ WIX_API_KEY, WIX_SITE_ID, OPENAI_API_KEY })) {
   if (!value) {
     console.error(`Missing required secret: ${key}`);
     process.exit(1);
@@ -40,78 +39,37 @@ const IS_DRY_RUN = String(DRY_RUN || '').toLowerCase() === 'true';
 registerFont(path.join(__dirname, 'assets', 'DejaVuSans-Bold.ttf'), { family: 'Bethel Bold' });
 registerFont(path.join(__dirname, 'assets', 'DejaVuSans.ttf'), { family: 'Bethel Regular' });
 
+// Default random now avoids the warmer/gold look because it was drifting into
+// ornate church-flyer territory. warm_tan still works only when explicitly requested.
 const STYLES = {
   purple_mountain: {
-    label: 'Purple Mountain',
-    colors: '#2c2354, #5a4a84, #8e79c7, #f5f0ff',
-    prompt: 'cool purple, lavender, and indigo alpine mountain atmosphere with a misty lake or snowy peak, elegant and calm',
+    label: 'purple mountain',
+    colors: ['#171433', '#2d2555', '#6d5aa8', '#f5f1ff'],
+    prompt: 'cool purple, indigo, lavender, snowy mountain, soft mist, premium modern Bethel look',
   },
   blue_lake: {
-    label: 'Blue Lake',
-    colors: '#143a5a, #245d81, #7fb8d6, #eef8ff',
-    prompt: 'cool blue lake and mountain atmosphere, calm water, misty valley, crisp clean premium look',
+    label: 'blue lake',
+    colors: ['#10283f', '#174d74', '#5d91b6', '#eff8ff'],
+    prompt: 'cool blue lake, mountain, soft mist, calm and premium, clean modern Bethel look',
   },
   forest_green: {
-    label: 'Forest Green',
-    colors: '#102f2a, #1f5a49, #6f9d83, #f2fff7',
-    prompt: 'deep evergreen forest and mountain atmosphere, peaceful mist, natural and grounded, refined church media look',
+    label: 'forest green',
+    colors: ['#102b29', '#1e5148', '#6f927f', '#effaf5'],
+    prompt: 'deep evergreen forest, cool mountain valley, subtle mist, refined clean Bethel look',
   },
   warm_tan: {
-    label: 'Warm Tan',
-    colors: '#5b3e24, #9b7145, #d5b179, #fff3df',
-    prompt: 'warm tan, gold, and soft amber mountain sunset atmosphere, autumn trees, rich but restrained premium look',
+    label: 'warm tan',
+    colors: ['#3f2d22', '#745739', '#b39166', '#fff1de'],
+    prompt: 'warm tan mountain sunset, restrained and clean, no ornate gold flyer style',
   },
 };
 
-const THUMBNAIL_STYLE_GUIDE = `
-TARGET LOOK:
-Clean, elegant, premium YouTube sermon thumbnail. It should feel like a professionally art-directed church-media thumbnail, not an AI church flyer.
-
-NON-NEGOTIABLES:
-- Use the uploaded preacher screenshot as the real preacher reference.
-- Preserve the preacher's real face, real expression, real clothing, and identity.
-- Do not invent, beautify, replace, or restyle the preacher into a different person.
-- No extra people.
-- No cartoon look.
-- No fake studio portrait.
-
-COMPOSITION:
-- 16:9 YouTube thumbnail.
-- Text on the left, preacher on the right.
-- Preacher should be chest-up or torso-up, large but not cramped.
-- Preacher should look naturally composited with clean edges and subtle blending.
-- Remove or hide distracting pulpit, iPad, microphone stand, walls, stage clutter, podium edges, or livestream clutter when possible.
-- Use a large rounded translucent frosted-glass panel behind the left text area.
-- The panel should occupy roughly the left 55 to 60 percent, with generous breathing room.
-- Use a thin subtle border on the panel.
-
-TYPOGRAPHY:
-- Use refined, elegant, high-contrast serif-style title typography.
-- Make the sermon title large, clean, and highly readable at small YouTube size.
-- Break title lines naturally. Do not cram words.
-- Minister name should be small, subtle, and clean near the top-left. Do NOT add the word "Speaker:".
-- Subtitle should be smaller, elegant, and may be italic. It should support the title, not overpower it.
-- Church name must appear as BETHEL TABERNACLE in a thin outlined capsule/button near the bottom-left.
-- Do not use a heavy filled badge, temple icon, church icon, decorative emblem, or bulky branding block.
-
-BACKGROUND:
-- Scenic nature background only: mountains, lake, pine forest, misty valley, sunrise/sunset, soft clouds.
-- Beautiful, peaceful, cinematic, premium, not cluttered.
-- Background should support readability and not compete with the preacher or title.
-
-AVOID:
-- No decorative flourishes, ornaments, icons, temple symbols, heavy dividers, or over-designed poster elements.
-- No dense church flyer look.
-- No extra text beyond the provided minister name, title, subtitle if any, and BETHEL TABERNACLE.
-- No misspelled or invented words.
-`;
-
 function chooseStyle() {
-  const keys = Object.keys(STYLES);
   if (STYLE_MODE && STYLE_MODE !== 'random' && STYLES[STYLE_MODE]) {
     return { id: STYLE_MODE, ...STYLES[STYLE_MODE] };
   }
-  const id = keys[Math.floor(Math.random() * keys.length)];
+  const defaultKeys = ['purple_mountain', 'blue_lake', 'forest_green'];
+  const id = defaultKeys[Math.floor(Math.random() * defaultKeys.length)];
   return { id, ...STYLES[id] };
 }
 
@@ -174,16 +132,15 @@ function findFirstStringByKey(obj, keyRegex) {
 function findLikelyImageUrl(obj) {
   const direct = findFirstStringByKey(obj, /^(url|fileUrl|downloadUrl|src)$/i);
   if (direct && /^https?:\/\//i.test(direct)) return direct;
-
   const urls = [];
-  function walk(v) {
-    if (!v) return;
-    if (typeof v === 'string') {
-      if (/^https?:\/\//i.test(v) && /(\.png|\.jpe?g|\.webp)(\?|#|$)|static\.wixstatic\.com|static\.parastorage\.com/i.test(v)) urls.push(v);
+  function walk(value) {
+    if (!value) return;
+    if (typeof value === 'string') {
+      if (/^https?:\/\//i.test(value) && /(\.png|\.jpe?g|\.webp)(\?|#|$)|static\.wixstatic\.com|static\.parastorage\.com/i.test(value)) urls.push(value);
       return;
     }
-    if (Array.isArray(v)) return v.forEach(walk);
-    if (typeof v === 'object') Object.values(v).forEach(walk);
+    if (Array.isArray(value)) return value.forEach(walk);
+    if (typeof value === 'object') return Object.values(value).forEach(walk);
   }
   walk(obj);
   return urls[0] || null;
@@ -206,10 +163,7 @@ function getScreenGrabUrlFromSubmission(submission) {
 async function queryRecentSubmissions() {
   const data = await wix('/form-submission-service/v4/submissions/namespace/query', 'POST', {
     query: {
-      filter: {
-        formId: SCREENGRAB_FORM_ID,
-        namespace: FORMS_NAMESPACE,
-      },
+      filter: { formId: SCREENGRAB_FORM_ID, namespace: FORMS_NAMESPACE },
       sort: [{ fieldName: 'createdDate', order: 'DESC' }],
       paging: { limit: 10 },
     },
@@ -245,11 +199,7 @@ async function patchSermonThumbnail(dataItemId, thumbnailRef) {
       {
         dataItemId,
         fieldModifications: [
-          {
-            fieldPath: 'thumbnail',
-            action: 'SET_FIELD',
-            setFieldOptions: { value: thumbnailRef },
-          },
+          { fieldPath: 'thumbnail', action: 'SET_FIELD', setFieldOptions: { value: thumbnailRef } },
         ],
       },
     ],
@@ -313,60 +263,44 @@ async function makeStyleReferenceImage(style) {
   const canvas = createCanvas(w, h);
   const ctx = canvas.getContext('2d');
 
+  const [c1, c2, c3, c4] = style.colors;
   const grd = ctx.createLinearGradient(0, 0, w, h);
-  const palette = style.colors.split(',').map(s => s.trim());
-  grd.addColorStop(0, palette[0] || '#221d45');
-  grd.addColorStop(0.45, palette[1] || '#514178');
-  grd.addColorStop(1, palette[3] || '#f6f1ff');
+  grd.addColorStop(0, c1);
+  grd.addColorStop(0.42, c2);
+  grd.addColorStop(1, c4);
   ctx.fillStyle = grd;
   ctx.fillRect(0, 0, w, h);
 
-  // Simple scenic guide shapes: mountains + mist + lake.
-  ctx.globalAlpha = 0.48;
-  ctx.fillStyle = '#ffffff';
-  ctx.beginPath();
-  ctx.moveTo(520, 560);
-  ctx.lineTo(790, 250);
-  ctx.lineTo(1060, 560);
-  ctx.closePath();
-  ctx.fill();
+  // Abstract clean layout guide only. No real words to copy.
   ctx.globalAlpha = 0.25;
-  ctx.fillStyle = '#000000';
-  ctx.beginPath();
-  ctx.moveTo(740, 560);
-  ctx.lineTo(980, 330);
-  ctx.lineTo(1250, 560);
-  ctx.closePath();
-  ctx.fill();
-  ctx.globalAlpha = 0.18;
   ctx.fillStyle = '#ffffff';
+  ctx.beginPath(); ctx.moveTo(520, 570); ctx.lineTo(790, 250); ctx.lineTo(1070, 570); ctx.closePath(); ctx.fill();
+  ctx.globalAlpha = 0.18;
+  ctx.beginPath(); ctx.moveTo(720, 570); ctx.lineTo(1000, 330); ctx.lineTo(1260, 570); ctx.closePath(); ctx.fill();
+  ctx.globalAlpha = 0.16;
   for (let i = 0; i < 8; i++) {
-    ctx.beginPath();
-    ctx.ellipse(180 + i * 180, 660 + Math.sin(i) * 18, 210, 45, 0, 0, Math.PI * 2);
-    ctx.fill();
+    ctx.beginPath(); ctx.ellipse(160 + i * 185, 670 + Math.sin(i) * 15, 225, 42, 0, 0, Math.PI * 2); ctx.fill();
   }
   ctx.globalAlpha = 1;
 
-  // Clean left design panel reference.
-  ctx.fillStyle = 'rgba(20, 16, 46, 0.54)';
-  roundRect(ctx, 70, 95, 670, 740, 54, true, false);
+  // Left frosted panel guide.
+  ctx.fillStyle = 'rgba(20, 16, 46, 0.56)';
+  roundRect(ctx, 58, 75, 700, 805, 54, true, false);
   ctx.strokeStyle = 'rgba(255,255,255,0.32)';
   ctx.lineWidth = 3;
-  roundRect(ctx, 70, 95, 670, 740, 54, false, true);
+  roundRect(ctx, 58, 75, 700, 805, 54, false, true);
 
-  ctx.fillStyle = 'rgba(255,255,255,0.96)';
-  ctx.font = '46px Bethel Regular';
-  ctx.fillText('MINISTER NAME', 130, 190);
-  ctx.font = '84px Bethel Bold';
-  ctx.fillText('Large Elegant', 130, 330);
-  ctx.fillText('Sermon Title', 130, 435);
-  ctx.font = '48px Bethel Regular';
-  ctx.fillText('Part Two', 130, 540);
+  // Text hierarchy guide as clean white bars, not text.
+  ctx.fillStyle = 'rgba(255,255,255,0.92)';
+  roundRect(ctx, 130, 150, 340, 28, 12, true, false);
+  roundRect(ctx, 130, 290, 520, 56, 16, true, false);
+  roundRect(ctx, 130, 370, 470, 56, 16, true, false);
+  roundRect(ctx, 130, 450, 360, 56, 16, true, false);
+  ctx.fillStyle = 'rgba(255,255,255,0.78)';
+  roundRect(ctx, 280, 605, 260, 46, 20, true, false);
   ctx.strokeStyle = 'rgba(255,255,255,0.8)';
   ctx.lineWidth = 3;
-  roundRect(ctx, 130, 665, 430, 72, 34, false, true);
-  ctx.font = '34px Bethel Regular';
-  ctx.fillText('BETHEL TABERNACLE', 165, 712);
+  roundRect(ctx, 130, 735, 470, 68, 34, false, true);
 
   const buffer = canvas.toBuffer('image/png');
   await writeArtifact('style-reference.png', buffer);
@@ -388,30 +322,32 @@ async function normalizeToJpeg(buffer, outName) {
   return jpg;
 }
 
-function buildThumbnailPrompt(style, display) {
-  const subtitleLine = display.subtitle ? `Subtitle text: ${display.subtitle}` : 'No subtitle text. Do not invent a part label.';
-  return `Create one professional 16:9 YouTube sermon thumbnail for Bethel Tabernacle.
+function buildPrompt({ style, display }) {
+  return `Create one polished 16:9 YouTube sermon thumbnail for Bethel Tabernacle.
 
-Use Image 1 as the style and layout guide. Use Image 2 as the real preacher reference.
+Image 1 is ONLY the layout/style reference: clean cool scenic background, large rounded translucent text panel on the left, preacher area on the right. Do not copy any placeholder shapes as text.
+Image 2 is the real preacher screenshot. Use this exact real preacher. Preserve his actual face, expression, hair, glasses if present, clothing, and identity. Do not invent a new person. Do not make a stock headshot.
 
-${THUMBNAIL_STYLE_GUIDE}
+Style: ${style.label}. ${style.prompt}.
 
-SELECTED STYLE:
-${style.label}: ${style.prompt}. Palette: ${style.colors}.
+Make the result look like a clean premium church-media thumbnail, close to a professional modern sermon series graphic. Keep it simple and high-end.
 
-TEXT TO RENDER EXACTLY:
-Minister name text: ${display.speaker}
-Sermon title text: ${display.title}
-${subtitleLine}
-Church label text: BETHEL TABERNACLE
+Required layout:
+- scenic mountain/lake/forest background
+- large rounded translucent panel on the LEFT
+- real preacher on the RIGHT, chest-up or torso-up, clean edges, natural blending
+- big elegant serif sermon title on the left
+- small minister name at top-left, without the word Speaker
+- subtitle smaller below the title if provided
+- BETHEL TABERNACLE in a thin outlined capsule near lower-left
 
-IMPORTANT TEXT RULES:
-- Do not write "Speaker:" anywhere.
-- Do not add a temple icon or church icon.
-- Do not add decorative symbols or extra divider ornaments.
-- Only use these text elements: minister name, sermon title, subtitle if provided, and BETHEL TABERNACLE.
+Exact text only:
+Minister name: ${display.speaker}
+Sermon title: ${display.title}
+${display.subtitle ? `Subtitle: ${display.subtitle}` : 'No subtitle.'}
+Church label: BETHEL TABERNACLE
 
-Design it closer to a clean premium modern thumbnail: open spacing, large elegant title, subtle rounded translucent panel, right-side real preacher cutout, thin outlined church capsule.`;
+Do not add icons. Do not add a temple icon. Do not add decorative flourishes. Do not add heavy gold badges. Do not add extra words. Do not use the word Speaker. Do not make it ornate. Prioritize clean spacing, simple hierarchy, and readability.`;
 }
 
 async function generateThumbnail({ screenshotBuffer, display }) {
@@ -426,15 +362,14 @@ async function generateThumbnail({ screenshotBuffer, display }) {
   form.append('size', '1536x1024');
   form.append('quality', 'high');
   form.append('image[]', new File([await fs.readFile(stylePath)], 'style-reference.png', { type: 'image/png' }));
-  form.append('image[]', new File([screenshotJpg], 'real-preacher-reference.jpg', { type: 'image/jpeg' }));
-  form.append('prompt', buildThumbnailPrompt(style, display));
+  form.append('image[]', new File([screenshotJpg], 'preacher-reference.jpg', { type: 'image/jpeg' }));
+  form.append('prompt', buildPrompt({ style, display }));
 
   const res = await fetch('https://api.openai.com/v1/images/edits', {
     method: 'POST',
     headers: { Authorization: `Bearer ${OPENAI_API_KEY}` },
     body: form,
   });
-
   const json = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(`OpenAI image edit failed ${res.status}: ${JSON.stringify(json)}`);
   const b64 = json.data && json.data[0] && json.data[0].b64_json;
@@ -457,26 +392,22 @@ async function uploadImageToWix(buffer, fileName) {
 }
 
 function wixImageRef(uploadedFile, fileName) {
-  const imgInfo = uploadedFile?.media?.image?.image || uploadedFile?.media?.image || {};
-  const width = imgInfo.width || 1280;
-  const height = imgInfo.height || 720;
-  return `wix:image://v1/${uploadedFile.id}/${fileName}#originWidth=${width}&originHeight=${height}`;
+  const imgInfo = uploadedFile.media?.image?.image || {};
+  return `wix:image://v1/${uploadedFile.id}/${fileName}#originWidth=${imgInfo.width || 1280}&originHeight=${imgInfo.height || 720}`;
 }
 
-async function main() {
+async function processLatestSubmission() {
   console.log('Checking Wix Sermon Screengrab Upload submissions...');
-  if (IS_DRY_RUN) console.log('DRY RUN: generated thumbnail only; Wix sermon thumbnail will not be updated.');
-
   const submissions = await queryRecentSubmissions();
   console.log(`Found ${submissions.length} recent submissions.`);
 
-  const unseen = submissions.filter(s => !s.seen);
-  if (!unseen.length) {
+  const candidates = submissions.filter((s) => !s.seen);
+  if (!candidates.length) {
     console.log('No unseen screengrab submissions to process.');
-    return;
+    return { processed: false, reason: 'NO_UNSEEN_SUBMISSIONS' };
   }
 
-  const submission = unseen[0];
+  const submission = candidates[0];
   const youtubeUrl = getYoutubeUrlFromSubmission(submission);
   const videoId = extractVideoId(youtubeUrl);
   const screenGrabUrl = getScreenGrabUrlFromSubmission(submission);
@@ -486,60 +417,56 @@ async function main() {
   console.log(`  Video ID: ${videoId || 'missing'}`);
   console.log(`  Screen grab URL found: ${screenGrabUrl ? 'yes' : 'no'}`);
 
-  if (!videoId) throw new Error('Could not extract a YouTube video ID from the form submission.');
-  if (!screenGrabUrl) throw new Error('Could not find uploaded screen grab URL in the form submission.');
+  if (!videoId) throw new Error('Could not extract YouTube video ID from form submission.');
+  if (!screenGrabUrl) throw new Error('Could not find uploaded screengrab URL in form submission.');
 
   const sermon = await findSermonByVideoId(videoId);
-  if (!sermon) throw new Error(`No existing Wix sermon item found containing video ID ${videoId}. Refusing to create a duplicate.`);
+  if (!sermon) throw new Error(`No existing Wix Sermons item found for video ID ${videoId}.`);
   console.log(`Matched sermon item: ${sermon.id}`);
 
-  const youtubeVideo = await getVideoDetails(videoId).catch(err => {
-    console.warn(`Could not fetch YouTube details, using Wix sermon fields only: ${err.message}`);
+  const youtubeVideo = await getVideoDetails(videoId).catch((err) => {
+    console.warn(`Could not fetch YouTube metadata; using Wix fields only. ${err.message}`);
     return null;
   });
   const display = getDisplayFromSermon(sermon, youtubeVideo);
   console.log(`Title: ${display.title}`);
   console.log(`Speaker: ${display.speaker}`);
-  console.log(`Subtitle: ${display.subtitle || '(none)'}`);
+  if (display.subtitle) console.log(`Subtitle: ${display.subtitle}`);
 
   const screenshotBuffer = await downloadBuffer(screenGrabUrl);
-  await writeArtifact('original-submitted-screengrab.jpg', screenshotBuffer);
-
-  const thumbnailBuffer = await generateThumbnail({ screenshotBuffer, display });
-
-  const info = {
+  await writeArtifact('process-result.json', Buffer.from(JSON.stringify({
     submissionId: submission.id,
     videoId,
     sermonItemId: sermon.id,
     title: display.title,
     speaker: display.speaker,
-    subtitle: display.subtitle || '',
+    subtitle: display.subtitle,
     dryRun: IS_DRY_RUN,
-    processedAt: new Date().toISOString(),
-    promptStyle: 'premium-clean-bethel-v2',
-  };
-  await writeArtifact('thumbnail-info.json', Buffer.from(JSON.stringify(info, null, 2)));
+  }, null, 2)));
+
+  const thumbnailBuffer = await generateThumbnail({ screenshotBuffer, display });
 
   if (IS_DRY_RUN) {
-    console.log('DRY RUN complete. Wix sermon thumbnail was not updated.');
-    return;
+    console.log('DRY RUN: generated thumbnail but did not update Wix sermon or mark submission seen.');
+    return { processed: true, dryRun: true, videoId, sermonItemId: sermon.id };
   }
 
   const fileName = `sermon-${videoId}-custom.jpg`;
   const uploadedFile = await uploadImageToWix(thumbnailBuffer, fileName);
   const thumbnailRef = wixImageRef(uploadedFile, fileName);
-
   await patchSermonThumbnail(sermon.id, thumbnailRef);
+  await markSubmissionSeen(submission);
   console.log('Updated sermon thumbnail successfully.');
 
-  await markSubmissionSeen(submission);
-  console.log('Marked submission seen.');
+  return { processed: true, dryRun: false, videoId, sermonItemId: sermon.id };
 }
 
-main().catch(async (err) => {
-  console.error(err && err.stack ? err.stack : err);
-  try {
-    await writeArtifact('thumbnail-error.txt', Buffer.from(String(err && err.stack ? err.stack : err)));
-  } catch (_) {}
-  process.exit(1);
-});
+processLatestSubmission()
+  .then(async (result) => {
+    await writeArtifact('process-result.json', Buffer.from(JSON.stringify(result, null, 2)));
+  })
+  .catch(async (err) => {
+    console.error(err);
+    await writeArtifact('process-result.json', Buffer.from(JSON.stringify({ error: err.message }, null, 2)));
+    process.exit(1);
+  });
