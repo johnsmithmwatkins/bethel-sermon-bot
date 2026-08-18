@@ -39,7 +39,7 @@ const IS_DRY_RUN = String(DRY_RUN || '').toLowerCase() === 'true';
 registerFont(path.join(__dirname, 'assets', 'DejaVuSans-Bold.ttf'), { family: 'Bethel Bold' });
 registerFont(path.join(__dirname, 'assets', 'DejaVuSans.ttf'), { family: 'Bethel Regular' });
 
-// Default random now avoids the warmer/gold look because it was drifting into
+// Default random avoids the warmer/gold look because it was drifting into
 // ornate church-flyer territory. warm_tan still works only when explicitly requested.
 const STYLES = {
   purple_mountain: {
@@ -309,7 +309,28 @@ async function makeStyleReferenceImage(style) {
   return tmp;
 }
 
-async function normalizeToJpeg(buffer, outName) {
+// This preserves the submitted preacher screenshot exactly. The previous version
+// used a 16:9 cover crop, which could cut the top of the preacher's head off
+// before OpenAI ever saw the reference image.
+async function preparePreacherReferenceJpeg(buffer, outName) {
+  const img = await loadImage(buffer);
+  const maxSide = 1800;
+  const scale = Math.min(1, maxSide / Math.max(img.width, img.height));
+  const w = Math.max(1, Math.round(img.width * scale));
+  const h = Math.max(1, Math.round(img.height * scale));
+  const canvas = createCanvas(w, h);
+  const ctx = canvas.getContext('2d');
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, w, h);
+  ctx.drawImage(img, 0, 0, w, h);
+  const jpg = canvas.toBuffer('image/jpeg', { quality: 0.96 });
+  await writeArtifact(outName, jpg);
+  return jpg;
+}
+
+// Final generated thumbnail still needs a true YouTube 16:9 output. This crop is
+// only used after OpenAI creates the designed thumbnail, never on the source screengrab.
+async function normalizeThumbnailToJpeg(buffer, outName) {
   const img = await loadImage(buffer);
   const canvas = createCanvas(1280, 720);
   const ctx = canvas.getContext('2d');
@@ -326,7 +347,12 @@ function buildPrompt({ style, display }) {
   return `Create one polished 16:9 YouTube sermon thumbnail for Bethel Tabernacle.
 
 Image 1 is ONLY the layout/style reference: clean cool scenic background, large rounded translucent text panel on the left, preacher area on the right. Do not copy any placeholder shapes as text.
-Image 2 is the real preacher screenshot. Use this exact real preacher. Preserve his actual face, expression, hair, glasses if present, clothing, and identity. Do not invent a new person. Do not make a stock headshot.
+Image 2 is the real preacher screenshot. Use this exact real preacher. Preserve his actual face, full head, expression, hair, glasses if present, clothing, and identity. Do not invent a new person. Do not make a stock headshot.
+
+Important preacher framing rule:
+- Do not crop off the top of the preacher's head.
+- Keep the full head and hair visible with a little breathing room above it.
+- If the screenshot includes the full head, the final thumbnail must include the full head.
 
 Style: ${style.label}. ${style.prompt}.
 
@@ -355,7 +381,7 @@ async function generateThumbnail({ screenshotBuffer, display }) {
   console.log(`Using style: ${style.id}`);
 
   const stylePath = await makeStyleReferenceImage(style);
-  const screenshotJpg = await normalizeToJpeg(screenshotBuffer, 'submitted-screengrab.jpg');
+  const screenshotJpg = await preparePreacherReferenceJpeg(screenshotBuffer, 'submitted-screengrab.jpg');
 
   const form = new FormData();
   form.append('model', IMAGE_MODEL);
@@ -376,7 +402,7 @@ async function generateThumbnail({ screenshotBuffer, display }) {
   if (!b64) throw new Error(`OpenAI did not return b64_json: ${JSON.stringify(json)}`);
 
   const raw = Buffer.from(b64, 'base64');
-  return normalizeToJpeg(raw, 'generated-thumbnail.jpg');
+  return normalizeThumbnailToJpeg(raw, 'generated-thumbnail.jpg');
 }
 
 async function uploadImageToWix(buffer, fileName) {
