@@ -1,27 +1,18 @@
 /**
- * Bethel Tabernacle — AI-style sermon thumbnail uploader
- * -------------------------------------------------------
- * This version keeps the existing YouTube -> Wix automation, but builds a
- * more designed thumbnail from an actual sermon frame instead of only using
- * YouTube's default thumbnail.
+ * Bethel Tabernacle — Automatic Sermon Uploader
+ * ------------------------------------------------
+ * Live bot with safe custom thumbnail generation.
  *
- * It does NOT log in to ChatGPT. It runs safely inside GitHub Actions.
- *
- * Recommended YouTube description lines:
- *   Speaker: Jason Watkins
- *   Sermon Title: From Earth to the Open Door
- *   Subtitle: Part Two
- *
- * Optional line:
- *   Preaching Starts: 42:15
- *
- * If no preaching-start timestamp is provided, the bot guesses a good frame
- * later in the sermon.
+ * Existing Wix sermon flow is protected:
+ * - If custom thumbnail generation succeeds, Wix gets the OpenAI-designed thumbnail.
+ * - If frame capture, rembg, OpenAI, or anything thumbnail-related fails, Wix still gets
+ *   the regular YouTube thumbnail-style fallback and the sermon is still added.
  */
 
 const { createCanvas, loadImage, registerFont } = require('canvas');
 const { execFile } = require('child_process');
 const fs = require('fs/promises');
+const fssync = require('fs');
 const os = require('os');
 const path = require('path');
 
@@ -31,6 +22,8 @@ const {
   WIX_API_KEY,
   WIX_SITE_ID,
   OPENAI_API_KEY,
+  STYLE_MODE,
+  OPENAI_IMAGE_MODEL,
 } = process.env;
 
 for (const [key, value] of Object.entries({
@@ -49,15 +42,48 @@ const COLLECTION_ID = 'Sermons';
 const MANUAL_SORT_FIELD = '_manualSort_9510f576-af2a-4ca5-93c3-008a3d8b80bb';
 const EXCLUDE_TITLE_KEYWORDS = ['sunday school'];
 const MAX_VIDEOS_TO_CHECK = 15;
+const IMAGE_MODEL = OPENAI_IMAGE_MODEL || 'gpt-image-2';
 
 registerFont(path.join(__dirname, 'assets', 'DejaVuSans-Bold.ttf'), { family: 'Bethel Bold' });
 registerFont(path.join(__dirname, 'assets', 'DejaVuSans.ttf'), { family: 'Bethel Regular' });
 
+const STYLES = {
+  purple_mountain: {
+    label: 'purple mountain',
+    colors: '#62547d, #372b5f, lavender blue, soft white',
+    prompt: 'soft lavender and blue mountain mood, snowy mountain or valley atmosphere, refined purple frame, elegant premium church thumbnail',
+  },
+  forest_green: {
+    label: 'forest green',
+    colors: '#0b526f, #123b35, deep evergreen, misty blue',
+    prompt: 'deep forest green and blue mountain mood, tall evergreen forest, misty valley depth, clean premium sermon thumbnail',
+  },
+  blue_lake: {
+    label: 'blue lake',
+    colors: '#08739d, #144e75, cool lake blue, pale sky',
+    prompt: 'cool blue lake and mountain mood, calm water, misty blue valley, clean classic Bethel sermon thumbnail',
+  },
+  warm_tan: {
+    label: 'warm tan',
+    colors: '#8a6745, #a67f54, warm gold, soft cream',
+    prompt: 'warm tan and gold mountain mood, autumn glow, soft sunrise or sunset, premium beige church thumbnail',
+  },
+};
+
+function chooseStyle() {
+  const keys = Object.keys(STYLES);
+  if (STYLE_MODE && STYLE_MODE !== 'random' && STYLES[STYLE_MODE]) {
+    return { id: STYLE_MODE, ...STYLES[STYLE_MODE] };
+  }
+  const id = keys[Math.floor(Math.random() * keys.length)];
+  return { id, ...STYLES[id] };
+}
+
 function run(cmd, args, options = {}) {
   return new Promise((resolve, reject) => {
-    execFile(cmd, args, { timeout: 240000, ...options }, (error, stdout, stderr) => {
+    execFile(cmd, args, { timeout: 420000, ...options }, (error, stdout, stderr) => {
       if (error) {
-        error.message += `\nCommand: ${cmd} ${args.join(' ')}\nSTDERR: ${stderr}`;
+        error.message += `\nCommand: ${cmd} ${args.join(' ')}\nSTDOUT: ${stdout}\nSTDERR: ${stderr}`;
         reject(error);
         return;
       }
@@ -164,7 +190,7 @@ function lineValue(description, labels) {
 }
 
 function stripVideoTitle(title) {
-  return title
+  return String(title || 'Sermon')
     .replace(/\|\s*Bethel Tabernacle.*$/i, '')
     .replace(/-\s*Bethel Tabernacle.*$/i, '')
     .replace(/\bLive Stream\b/gi, '')
@@ -189,18 +215,7 @@ function parseDurationSeconds(isoDuration) {
 }
 
 function normalizePartWord(n) {
-  return ({
-    1: 'One',
-    2: 'Two',
-    3: 'Three',
-    4: 'Four',
-    5: 'Five',
-    6: 'Six',
-    7: 'Seven',
-    8: 'Eight',
-    9: 'Nine',
-    10: 'Ten',
-  }[n] || String(n));
+  return ({ 1: 'One', 2: 'Two', 3: 'Three', 4: 'Four', 5: 'Five', 6: 'Six', 7: 'Seven', 8: 'Eight', 9: 'Nine', 10: 'Ten' }[n] || String(n));
 }
 
 function getDisplayData(video) {
@@ -225,17 +240,22 @@ function getPreachingStartSeconds(video) {
   const explicit = lineValue(description, ['Preaching Starts', 'Preaching Start', 'Sermon Starts', 'Sermon Start', 'Message Starts', 'Message Start']);
   const parsed = parseTimestamp(explicit);
   if (parsed !== null) return parsed;
-
   const duration = parseDurationSeconds(video.contentDetails && video.contentDetails.duration);
   if (duration && duration > 0) return Math.min(Math.max(Math.round(duration * 0.42), 1800), 3900);
   return 2700;
+}
+
+async function downloadToFile(url, output) {
+  const res = await fetch(url, { redirect: 'follow' });
+  if (!res.ok) throw new Error(`Could not download ${url}: HTTP ${res.status}`);
+  await fs.writeFile(output, Buffer.from(await res.arrayBuffer()));
+  return output;
 }
 
 async function captureVideoFrame(videoId, seconds, fallbackThumbUrl) {
   const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'bethel-thumb-'));
   const output = path.join(tmpDir, `${videoId}.jpg`);
   const videoUrl = `https://www.youtube.com/watch?v=${videoId}`;
-
   try {
     console.log(`  Capturing preacher frame around ${seconds}s...`);
     const mediaUrls = await run('yt-dlp', ['-f', 'bv*[height<=720]/b[height<=720]/best', '-g', videoUrl]);
@@ -245,288 +265,210 @@ async function captureVideoFrame(videoId, seconds, fallbackThumbUrl) {
     await fs.access(output);
     return output;
   } catch (err) {
-    console.warn(`  ! Could not capture video frame, using YouTube thumbnail instead. ${err.message}`);
-    const res = await fetch(fallbackThumbUrl);
-    if (!res.ok) throw new Error(`Could not download fallback thumbnail: ${res.status}`);
-    await fs.writeFile(output, Buffer.from(await res.arrayBuffer()));
-    return output;
+    console.warn(`  ! Could not capture video frame, using YouTube thumbnail as source frame. ${err.message}`);
+    return downloadToFile(fallbackThumbUrl, output);
   }
 }
 
-function hashText(text) {
-  let hash = 0;
-  for (const ch of text) hash = ((hash << 5) - hash + ch.charCodeAt(0)) | 0;
-  return Math.abs(hash);
+async function makeRembgCutout(inputPath) {
+  const out = path.join(path.dirname(inputPath), `cutout-${Date.now()}.png`);
+  const py = path.join(os.tmpdir(), `rembg-api-${Date.now()}.py`);
+  await fs.writeFile(py, `
+from rembg import remove
+from PIL import Image
+import sys
+img = Image.open(sys.argv[1]).convert('RGBA')
+result = remove(img)
+result.save(sys.argv[2])
+`);
+  await run('python3', [py, inputPath, out]);
+  await fs.access(out);
+  return cleanAndCropCutout(out);
 }
 
-function paletteFor(title) {
-  const palettes = [
-    { outer: '#0d5f84', top: '#144e75', mid: '#172b4b', bottom: '#071425', accent: '#b7d8f4' },
-    { outer: '#615780', top: '#5a5076', mid: '#22213f', bottom: '#080912', accent: '#d4b2ff' },
-    { outer: '#284e61', top: '#244b51', mid: '#0f312d', bottom: '#061411', accent: '#bee6d0' },
-    { outer: '#866647', top: '#a67f54', mid: '#2c2b2a', bottom: '#10100f', accent: '#ffd687' },
-  ];
-  return palettes[hashText(title) % palettes.length];
-}
-
-function roundRect(ctx, x, y, w, h, r) {
-  ctx.beginPath();
-  ctx.moveTo(x + r, y);
-  ctx.arcTo(x + w, y, x + w, y + h, r);
-  ctx.arcTo(x + w, y + h, x, y + h, r);
-  ctx.arcTo(x, y + h, x, y, r);
-  ctx.arcTo(x, y, x + w, y, r);
-  ctx.closePath();
-}
-
-function drawCoverImage(ctx, img, x, y, w, h, focalX = 0.5, focalY = 0.5) {
-  const scale = Math.max(w / img.width, h / img.height);
-  const sw = w / scale;
-  const sh = h / scale;
-  const sx = Math.max(0, Math.min(img.width - sw, img.width * focalX - sw / 2));
-  const sy = Math.max(0, Math.min(img.height - sh, img.height * focalY - sh / 2));
-  ctx.drawImage(img, sx, sy, sw, sh, x, y, w, h);
-}
-
-function drawFallbackBackground(ctx, palette, title) {
-  const w = 1280;
-  const h = 720;
-  ctx.fillStyle = palette.outer;
-  ctx.fillRect(0, 0, w, h);
-
-  const gx = ctx.createLinearGradient(0, 40, 0, h - 40);
-  gx.addColorStop(0, palette.top);
-  gx.addColorStop(0.58, palette.mid);
-  gx.addColorStop(1, palette.bottom);
-  roundRect(ctx, 38, 46, 1204, 628, 28);
-  ctx.fillStyle = gx;
-  ctx.fill();
-
-  ctx.save();
-  roundRect(ctx, 38, 46, 1204, 628, 28);
-  ctx.clip();
-
-  const mountainSets = [
-    { y: 330, color: 'rgba(255,255,255,0.22)', peaks: [80, 250, 420, 610, 800, 1030, 1240] },
-    { y: 390, color: 'rgba(0,0,0,0.35)', peaks: [0, 180, 350, 560, 740, 930, 1160, 1280] },
-  ];
-  for (const set of mountainSets) {
-    ctx.beginPath();
-    ctx.moveTo(0, h);
-    for (let i = 0; i < set.peaks.length; i++) {
-      const x = set.peaks[i];
-      const peakY = i % 2 === 0 ? set.y - 180 - (hashText(title + i) % 85) : set.y - 45;
-      ctx.lineTo(x, peakY);
+function alphaBox(canvas, ignoreLower = 0) {
+  const ctx = canvas.getContext('2d');
+  const d = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+  const yLimit = Math.floor(canvas.height * (1 - ignoreLower));
+  let minX = canvas.width, minY = canvas.height, maxX = -1, maxY = -1;
+  for (let y = 0; y < yLimit; y++) {
+    for (let x = 0; x < canvas.width; x++) {
+      const a = d[(y * canvas.width + x) * 4 + 3];
+      if (a > 12) {
+        minX = Math.min(minX, x); minY = Math.min(minY, y); maxX = Math.max(maxX, x); maxY = Math.max(maxY, y);
+      }
     }
-    ctx.lineTo(w, h);
-    ctx.closePath();
-    ctx.fillStyle = set.color;
-    ctx.fill();
   }
-
-  const lake = ctx.createLinearGradient(0, 455, 0, h);
-  lake.addColorStop(0, 'rgba(20, 70, 95, 0.35)');
-  lake.addColorStop(1, 'rgba(2, 8, 18, 0.78)');
-  ctx.fillStyle = lake;
-  ctx.fillRect(0, 455, w, 300);
-
-  const vg = ctx.createRadialGradient(820, 325, 160, 620, 370, 820);
-  vg.addColorStop(0, 'rgba(0,0,0,0.05)');
-  vg.addColorStop(1, 'rgba(0,0,0,0.62)');
-  ctx.fillStyle = vg;
-  ctx.fillRect(0, 46, w, 628);
-  ctx.restore();
+  if (maxX < minX) return null;
+  return { x: minX, y: minY, w: maxX - minX + 1, h: maxY - minY + 1 };
 }
 
-async function generateOpenAIBackground({ title, subtitle, speaker, palette }) {
-  if (!OPENAI_API_KEY) return null;
+async function cleanAndCropCutout(inputPath) {
+  const img = await loadImage(inputPath);
+  const src = createCanvas(img.width, img.height);
+  const sctx = src.getContext('2d');
+  sctx.drawImage(img, 0, 0);
+  const box = alphaBox(src, 0.18) || alphaBox(src, 0) || { x: 0, y: 0, w: img.width, h: img.height };
+  const padX = Math.round(box.w * 0.05);
+  const padTop = Math.round(box.h * 0.03);
+  const x = Math.max(0, box.x - padX);
+  const y = Math.max(0, box.y - padTop);
+  const w = Math.min(img.width - x, box.w + padX * 2);
+  const h = Math.min(img.height - y, Math.round(box.h * 0.88) + padTop);
+  const out = path.join(path.dirname(inputPath), `preacher-cutout-${Date.now()}.png`);
+  const dst = createCanvas(w, h);
+  dst.getContext('2d').drawImage(src, x, y, w, h, 0, 0, w, h);
+  await fs.writeFile(out, dst.toBuffer('image/png'));
+  return out;
+}
 
-  const prompt = [
-    'Create a beautiful 16:9 sermon thumbnail background only.',
-    'No people, no faces, no text, no letters, no words, no logos, no watermark.',
-    'Style: elegant Christian sermon promo background, cinematic and peaceful, suitable for Bethel Tabernacle.',
-    'Scene: majestic mountains, lake or valley, soft atmospheric depth, tasteful clouds, sunrise or sunset glow.',
-    `Primary color mood should harmonize with these colors: ${palette.top}, ${palette.mid}, ${palette.bottom}.`,
-    `The sermon title is "${title}"${subtitle ? ` with subtitle "${subtitle}"` : ''} and the speaker is "${speaker}", so the background should feel reverent, calm, and inspiring.`,
-    'Keep the left half visually cleaner and darker for title text readability, and keep the right side suitable for compositing a preacher cutout.',
-    'Modern polished YouTube thumbnail aesthetic.',
-  ].join(' ');
+function drawBasicFallbackThumbnailBuffer(sourceThumbBuffer, title, speaker) {
+  return loadImage(sourceThumbBuffer).then((img) => {
+    const canvas = createCanvas(img.width, img.height);
+    const ctx = canvas.getContext('2d');
+    ctx.drawImage(img, 0, 0, img.width, img.height);
+    const bandHeight = Math.round(img.height * 0.32);
+    const bandY = img.height - bandHeight;
+    const gradient = ctx.createLinearGradient(0, bandY, 0, img.height);
+    gradient.addColorStop(0, 'rgba(8, 16, 33, 0)');
+    gradient.addColorStop(0.4, 'rgba(8, 16, 33, 0.88)');
+    gradient.addColorStop(1, 'rgba(8, 16, 33, 0.94)');
+    ctx.fillStyle = gradient;
+    ctx.fillRect(0, bandY, img.width, bandHeight);
 
-  try {
-    const res = await fetch('https://api.openai.com/v1/images/generations', {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${OPENAI_API_KEY}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        model: 'gpt-image-2',
-        prompt,
-        size: '1536x1024',
-      }),
-    });
-
-    if (!res.ok) {
-      const text = await res.text();
-      console.warn(`  ! OpenAI image generation failed (${res.status}). Falling back to built-in background. ${text}`);
-      return null;
+    const paddingX = Math.round(img.width * 0.045);
+    let titleSize = Math.round(img.height * 0.078);
+    ctx.font = `${titleSize}px "Bethel Bold"`;
+    let lines = wrapText(ctx, title.toUpperCase(), img.width - paddingX * 2);
+    while (lines.length > 2 && titleSize > 26) {
+      titleSize -= 2;
+      ctx.font = `${titleSize}px "Bethel Bold"`;
+      lines = wrapText(ctx, title.toUpperCase(), img.width - paddingX * 2);
     }
-
-    const json = await res.json();
-    const b64 = json && json.data && json.data[0] && json.data[0].b64_json;
-    if (!b64) {
-      console.warn('  ! OpenAI returned no image data. Falling back to built-in background.');
-      return null;
-    }
-    return Buffer.from(b64, 'base64');
-  } catch (err) {
-    console.warn(`  ! OpenAI image generation threw an error. Falling back to built-in background. ${err.message}`);
-    return null;
-  }
+    lines = lines.slice(0, 2);
+    ctx.fillStyle = '#ffffff';
+    const lineGap = titleSize * 1.15;
+    let y = img.height - Math.round(img.height * 0.105) - (lines.length - 1) * lineGap;
+    for (const line of lines) { ctx.fillText(line, paddingX, y); y += lineGap; }
+    ctx.font = `${Math.round(img.height * 0.042)}px "Bethel Regular"`;
+    ctx.fillStyle = '#d7dee8';
+    ctx.fillText(speaker.toUpperCase(), paddingX, img.height - Math.round(img.height * 0.035));
+    ctx.font = `${Math.round(img.height * 0.045)}px "Bethel Bold"`;
+    ctx.fillStyle = 'rgba(255,255,255,0.92)';
+    ctx.fillText('BETHEL TABERNACLE', paddingX, Math.round(img.height * 0.09));
+    return canvas.toBuffer('image/jpeg', { quality: 0.9 });
+  });
 }
 
 function wrapText(ctx, text, maxWidth) {
-  const words = text.split(/\s+/).filter(Boolean);
+  const words = String(text || '').split(/\s+/).filter(Boolean);
   const lines = [];
   let line = '';
   for (const word of words) {
     const test = line ? `${line} ${word}` : word;
-    if (ctx.measureText(test).width > maxWidth && line) {
-      lines.push(line);
-      line = word;
-    } else {
-      line = test;
-    }
+    if (ctx.measureText(test).width > maxWidth && line) { lines.push(line); line = word; } else { line = test; }
   }
   if (line) lines.push(line);
   return lines;
 }
 
-function titleCaseName(name) {
-  return name.replace(/\w\S*/g, (part) => part.charAt(0).toUpperCase() + part.slice(1).toLowerCase());
+async function fileBlob(filePath, mime) {
+  const bytes = await fs.readFile(filePath);
+  return new Blob([bytes], { type: mime });
 }
 
-async function buildDesignedThumbnail({ video, title, subtitle, speaker, fallbackThumbUrl }) {
+function buildOpenAIThumbnailPrompt({ title, subtitle, speaker, dateStr, style }) {
+  return `Create a polished 16:9 YouTube sermon thumbnail for Bethel Tabernacle.
+
+Reference images:
+- Image 1 is the real preacher cutout. Preserve the real face, hair, glasses, skin tone, suit, and expression. Do not invent a new face and do not make him look AI-generated.
+- Image 2 is the original sermon frame/YouTube thumbnail for context only.
+
+Design style for this run: ${style.label}. ${style.prompt}. Color family: ${style.colors}.
+
+Layout requirements:
+- Put the preacher large and clean on the RIGHT side, roughly mid-torso or chest-up.
+- Remove pulpit, iPad/tablet, microphone stand clutter, books, and screenshot remnants.
+- Put the text on the LEFT side with a refined translucent rounded panel if needed.
+- Use elegant serif typography and a premium Bethel Tabernacle sermon thumbnail look.
+- Use beautiful nature scenery: mountain, lake, forest, valley, sky, mist, sunrise or sunset glow.
+- Use a tasteful outer frame/border feel and soft cinematic shading.
+- Make it clean, professional, and readable, not a basic pasted collage.
+
+Exact text to include:
+- Speaker name at top left: "${speaker}"
+- Main title: "${title}"
+- ${subtitle ? `Subtitle/part line: "${subtitle}"` : 'No subtitle/part line unless it naturally belongs.'}
+- Bottom-left rounded pill/button text: "BETHEL TABERNACLE"
+- ${dateStr ? `You may include date subtly only if it fits: "${dateStr}"` : 'Do not add a date.'}
+
+Critical rules:
+- Do not copy text from the context image.
+- Spell all text exactly as provided.
+- Do not make the preacher tiny.
+- Keep the finished result close to the clean, polished Bethel sermon thumbnails approved by the church.`;
+}
+
+async function generateOpenAIFinalThumbnail({ framePath, cutoutPath, title, subtitle, speaker, dateStr, style }) {
+  if (!OPENAI_API_KEY) throw new Error('OPENAI_API_KEY is missing.');
+  const form = new FormData();
+  form.append('model', IMAGE_MODEL);
+  form.append('prompt', buildOpenAIThumbnailPrompt({ title, subtitle, speaker, dateStr, style }));
+  form.append('quality', 'high');
+  form.append('size', '1536x1024');
+  form.append('image[]', await fileBlob(cutoutPath, 'image/png'), 'preacher-cutout.png');
+  form.append('image[]', await fileBlob(framePath, 'image/jpeg'), 'sermon-frame.jpg');
+
+  const res = await fetch('https://api.openai.com/v1/images/edits', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${OPENAI_API_KEY}` },
+    body: form,
+  });
+  const json = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(`OpenAI image edit failed ${res.status}: ${JSON.stringify(json)}`);
+  const b64 = json && json.data && json.data[0] && json.data[0].b64_json;
+  if (!b64) throw new Error('OpenAI returned no thumbnail image data.');
+  return Buffer.from(b64, 'base64');
+}
+
+async function forceYoutubeJpeg16x9(buffer) {
+  const img = await loadImage(buffer);
   const canvas = createCanvas(1280, 720);
   const ctx = canvas.getContext('2d');
-  const palette = paletteFor(title);
+  const scale = Math.max(1280 / img.width, 720 / img.height);
+  const sw = 1280 / scale;
+  const sh = 720 / scale;
+  const sx = Math.max(0, (img.width - sw) / 2);
+  const sy = Math.max(0, (img.height - sh) / 2);
+  ctx.drawImage(img, sx, sy, sw, sh, 0, 0, 1280, 720);
+  return canvas.toBuffer('image/jpeg', { quality: 0.94 });
+}
 
-  ctx.fillStyle = palette.outer;
-  ctx.fillRect(0, 0, 1280, 720);
+async function downloadThumbBuffer(url) {
+  const res = await fetch(url, { redirect: 'follow' });
+  if (!res.ok) throw new Error(`Could not download YouTube thumbnail: HTTP ${res.status}`);
+  return Buffer.from(await res.arrayBuffer());
+}
 
-  const bgBuffer = await generateOpenAIBackground({ title, subtitle, speaker, palette });
-  if (bgBuffer) {
-    const bg = await loadImage(bgBuffer);
-    ctx.save();
-    roundRect(ctx, 38, 46, 1204, 628, 28);
-    ctx.clip();
-    drawCoverImage(ctx, bg, 38, 46, 1204, 628, 0.52, 0.48);
-    ctx.restore();
+async function buildSafeThumbnail({ video, title, subtitle, speaker, dateStr, fallbackThumbUrl }) {
+  const fallbackBuffer = await downloadThumbBuffer(fallbackThumbUrl);
+  const style = chooseStyle();
+  console.log(`  Selected thumbnail style: ${style.id}`);
 
-    ctx.strokeStyle = 'rgba(255,255,255,0.18)';
-    ctx.lineWidth = 2;
-    roundRect(ctx, 38, 46, 1204, 628, 28);
-    ctx.stroke();
-
-    const overlay = ctx.createLinearGradient(70, 0, 860, 0);
-    overlay.addColorStop(0, 'rgba(7, 12, 22, 0.78)');
-    overlay.addColorStop(0.45, 'rgba(8, 13, 24, 0.48)');
-    overlay.addColorStop(1, 'rgba(8, 13, 24, 0.08)');
-    ctx.save();
-    roundRect(ctx, 38, 46, 1204, 628, 28);
-    ctx.clip();
-    ctx.fillStyle = overlay;
-    ctx.fillRect(38, 46, 1204, 628);
-    ctx.restore();
-  } else {
-    drawFallbackBackground(ctx, palette, title);
+  try {
+    const framePath = await captureVideoFrame(video.id, getPreachingStartSeconds(video), fallbackThumbUrl);
+    const cutoutPath = await makeRembgCutout(framePath);
+    console.log(`  Creating final thumbnail with OpenAI ${IMAGE_MODEL}...`);
+    const openaiPng = await generateOpenAIFinalThumbnail({ framePath, cutoutPath, title, subtitle, speaker, dateStr, style });
+    return await forceYoutubeJpeg16x9(openaiPng);
+  } catch (err) {
+    console.warn(`  ! Custom OpenAI thumbnail failed. Using normal YouTube thumbnail fallback. ${err.message}`);
+    return drawBasicFallbackThumbnailBuffer(fallbackBuffer, subtitle ? `${title} — ${subtitle}` : title, speaker);
   }
-
-  const framePath = await captureVideoFrame(video.id, getPreachingStartSeconds(video), fallbackThumbUrl);
-  const frame = await loadImage(framePath);
-
-  const px = 735;
-  const py = 65;
-  const pw = 520;
-  const ph = 640;
-  ctx.save();
-  roundRect(ctx, px, py, pw, ph, 24);
-  ctx.clip();
-  drawCoverImage(ctx, frame, px, py, pw, ph, 0.58, 0.38);
-  ctx.fillStyle = 'rgba(7, 14, 24, 0.06)';
-  ctx.fillRect(px, py, pw, ph);
-  ctx.restore();
-
-  ctx.strokeStyle = 'rgba(255,255,255,0.18)';
-  ctx.lineWidth = 2;
-  roundRect(ctx, px, py, pw, ph, 24);
-  ctx.stroke();
-
-  const sideBlend = ctx.createLinearGradient(680, 0, 825, 0);
-  sideBlend.addColorStop(0, 'rgba(8, 13, 28, 0.94)');
-  sideBlend.addColorStop(1, 'rgba(8, 13, 28, 0)');
-  ctx.fillStyle = sideBlend;
-  ctx.fillRect(660, 46, 190, 628);
-
-  ctx.fillStyle = 'rgba(255,255,255,0.95)';
-  ctx.font = '30px "Bethel Regular"';
-  ctx.fillText(titleCaseName(speaker), 126, 140);
-
-  let fontSize = title.length > 36 ? 72 : 86;
-  let lines;
-  do {
-    ctx.font = `${fontSize}px "Bethel Regular"`;
-    lines = wrapText(ctx, title, 610);
-    if (lines.length > 4) fontSize -= 4;
-  } while (lines.length > 4 && fontSize > 44);
-
-  ctx.fillStyle = '#ffffff';
-  ctx.textBaseline = 'alphabetic';
-  let y = subtitle ? 285 : 320;
-  const gap = fontSize * 0.98;
-  for (const line of lines) {
-    ctx.fillText(line, 126, y);
-    y += gap;
-  }
-
-  if (subtitle) {
-    const subText = subtitle.replace(/\bpart\b/i, 'Part');
-    const sx = 126;
-    const sy = Math.min(575, y + 15);
-    ctx.save();
-    ctx.shadowColor = palette.accent;
-    ctx.shadowBlur = 18;
-    ctx.strokeStyle = palette.accent;
-    ctx.lineWidth = 2;
-    roundRect(ctx, sx, sy - 48, 360, 64, 10);
-    ctx.stroke();
-    ctx.restore();
-    ctx.font = '44px "Bethel Bold"';
-    ctx.fillStyle = palette.accent;
-    ctx.fillText(subText.toUpperCase(), sx + 28, sy);
-  }
-
-  const tagX = 126;
-  const tagY = 615;
-  const tagW = 430;
-  const tagH = 58;
-  ctx.strokeStyle = 'rgba(255,255,255,0.95)';
-  ctx.lineWidth = 3;
-  roundRect(ctx, tagX, tagY, tagW, tagH, 26);
-  ctx.stroke();
-  ctx.font = '28px "Bethel Bold"';
-  ctx.fillStyle = '#ffffff';
-  ctx.fillText('BETHEL TABERNACLE', tagX + 31, tagY + 39);
-
-  return canvas.toBuffer('image/jpeg', { quality: 0.92 });
 }
 
 async function main() {
-  console.log('Checking for new Bethel Tabernacle sermons with AI-style thumbnail builder...');
-  if (!OPENAI_API_KEY) {
-    console.log('OPENAI_API_KEY not found. The script will use the built-in scenic background fallback.');
-  }
-
+  console.log('Checking for new Bethel Tabernacle sermons...');
   const playlistId = await getUploadsPlaylistId();
   const videoIds = await getRecentVideoIds(playlistId);
   const videos = await getVideoDetails(videoIds);
@@ -553,8 +495,8 @@ async function main() {
     const thumbs = video.snippet.thumbnails || {};
     const sourceThumb = (thumbs.maxres || thumbs.standard || thumbs.high || thumbs.medium || thumbs.default).url;
 
-    console.log('  Building designed thumbnail...');
-    const jpegBuffer = await buildDesignedThumbnail({ video, title, subtitle, speaker, fallbackThumbUrl: sourceThumb });
+    console.log('  Building thumbnail...');
+    const jpegBuffer = await buildSafeThumbnail({ video, title, subtitle, speaker, dateStr, fallbackThumbUrl: sourceThumb });
 
     console.log('  Uploading thumbnail to Wix...');
     const fileName = `sermon-${id}.jpg`;
