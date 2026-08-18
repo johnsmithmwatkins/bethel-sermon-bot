@@ -2,12 +2,9 @@
  * Manual thumbnail test runner.
  * Generates test-thumbnail.jpg, preacher-cutout.png, and ai-background.png.
  *
- * New architecture:
- * - Use the real preacher frame/cutout.
- * - Use rembg locally only to preserve real preacher pixels.
- * - Use OpenAI gpt-image-2 for the FINAL polished thumbnail composition,
- *   not just the background. This should be much closer to the approved
- *   ChatGPT-made thumbnail style.
+ * Safety rule:
+ * - The final OpenAI image model is NEVER called unless the preacher frame/cutout
+ *   looks valid. This prevents fake/random preachers when YouTube frame capture fails.
  */
 
 const { createCanvas, loadImage } = require('canvas');
@@ -44,10 +41,10 @@ const {
 } = process.env;
 
 if (!PREACHER_IMAGE_URL && !VIDEO_ID && !CUTOUT_PATH) {
-  throw new Error('Provide PREACHER_IMAGE_URL, VIDEO_ID, or CUTOUT_PATH. PREACHER_IMAGE_URL gives the best test result.');
+  throw new Error('Provide PREACHER_IMAGE_URL, VIDEO_ID, or CUTOUT_PATH.');
 }
 if (!OPENAI_API_KEY) {
-  throw new Error('Missing OPENAI_API_KEY secret. The final thumbnail now uses the OpenAI image model.');
+  throw new Error('Missing OPENAI_API_KEY secret. The final thumbnail uses the OpenAI image model.');
 }
 if (!toFile) {
   throw new Error('The installed openai npm package does not expose toFile(). Run npm install openai@latest or update package.json.');
@@ -99,9 +96,11 @@ function hashText(text) {
 }
 
 function chooseStyle(title) {
-  if (STYLE_MODE && STYLES[STYLE_MODE]) return { id: STYLE_MODE, ...STYLES[STYLE_MODE] };
+  if (STYLE_MODE && STYLE_MODE !== 'random' && STYLES[STYLE_MODE]) return { id: STYLE_MODE, ...STYLES[STYLE_MODE] };
   const keys = Object.keys(STYLES);
-  const id = keys[hashText(title) % keys.length];
+  const id = STYLE_MODE === 'random' || !STYLE_MODE
+    ? keys[Math.floor(Math.random() * keys.length)]
+    : keys[hashText(title) % keys.length];
   return { id, ...STYLES[id] };
 }
 
@@ -152,35 +151,112 @@ async function downloadImage(url, label = 'image') {
   return out;
 }
 
-async function captureVideoFrame(videoId, seconds, fallbackThumbUrl) {
-  const out = path.join(os.tmpdir(), `preacher-frame-${Date.now()}.jpg`);
-  try {
-    console.log(`Capturing preacher frame around ${seconds}s...`);
-    const mediaUrls = await run('yt-dlp', ['-f', 'bv*[height<=720]/b[height<=720]/best', '-g', `https://www.youtube.com/watch?v=${videoId}`]);
-    const mediaUrl = mediaUrls.split('\n').find(Boolean);
-    if (!mediaUrl) throw new Error('yt-dlp did not return a media URL.');
-    await run('ffmpeg', ['-y', '-ss', String(seconds), '-i', mediaUrl, '-frames:v', '1', '-q:v', '2', out]);
-    await fsp.access(out);
-    return out;
-  } catch (err) {
-    if (!fallbackThumbUrl) throw err;
-    console.warn(`Could not capture video frame, using YouTube thumbnail instead. ${err.message}`);
-    return downloadImage(fallbackThumbUrl, 'youtube-thumbnail');
+async function imageStats(imagePath) {
+  const img = await loadImage(imagePath);
+  const canvas = createCanvas(img.width, img.height);
+  const ctx = canvas.getContext('2d');
+  ctx.drawImage(img, 0, 0);
+  const data = ctx.getImageData(0, 0, img.width, img.height).data;
+  let alphaPixels = 0;
+  let opaquePixels = 0;
+  let blackishPixels = 0;
+  let brightnessSum = 0;
+  let minX = img.width;
+  let minY = img.height;
+  let maxX = -1;
+  let maxY = -1;
+
+  for (let y = 0; y < img.height; y++) {
+    for (let x = 0; x < img.width; x++) {
+      const i = (y * img.width + x) * 4;
+      const r = data[i];
+      const g = data[i + 1];
+      const b = data[i + 2];
+      const a = data[i + 3];
+      const brightness = (r + g + b) / 3;
+      brightnessSum += brightness;
+      if (brightness < 10) blackishPixels++;
+      if (a > 12) {
+        alphaPixels++;
+        minX = Math.min(minX, x);
+        minY = Math.min(minY, y);
+        maxX = Math.max(maxX, x);
+        maxY = Math.max(maxY, y);
+      }
+      if (a > 240) opaquePixels++;
+    }
+  }
+
+  const total = img.width * img.height;
+  const alphaRatio = alphaPixels / total;
+  const opaqueRatio = opaquePixels / total;
+  const blackRatio = blackishPixels / total;
+  const avgBrightness = brightnessSum / total;
+  const boxW = maxX >= minX ? maxX - minX + 1 : 0;
+  const boxH = maxY >= minY ? maxY - minY + 1 : 0;
+  const boxRatio = (boxW * boxH) / total;
+
+  return { width: img.width, height: img.height, avgBrightness, blackRatio, alphaRatio, opaqueRatio, boxW, boxH, boxRatio };
+}
+
+async function assertValidFrame(imagePath) {
+  const s = await imageStats(imagePath);
+  console.log(`Frame check: brightness ${s.avgBrightness.toFixed(1)}, black ${(s.blackRatio * 100).toFixed(1)}%, size ${s.width}x${s.height}.`);
+  if (s.width < 300 || s.height < 180) throw new Error('Captured preacher frame is too small.');
+  if (s.avgBrightness < 18 || s.blackRatio > 0.88) {
+    throw new Error('Captured preacher frame appears black/blank. Refusing to generate a fake-preacher thumbnail.');
   }
 }
 
-async function getInputPreacherImage(video, fallbackThumbUrl) {
+async function assertValidCutout(cutoutPath) {
+  const s = await imageStats(cutoutPath);
+  console.log(`Cutout check: brightness ${s.avgBrightness.toFixed(1)}, black ${(s.blackRatio * 100).toFixed(1)}%, alpha ${(s.alphaRatio * 100).toFixed(1)}%, subject box ${(s.boxRatio * 100).toFixed(1)}%.`);
+  if (s.width < 120 || s.height < 120) throw new Error('Preacher cutout is too small.');
+  if (s.avgBrightness < 12 || s.blackRatio > 0.82) {
+    throw new Error('Preacher cutout appears black/blank. Refusing to let OpenAI invent a preacher.');
+  }
+  if (s.alphaRatio < 0.04 || s.boxRatio < 0.05) {
+    throw new Error('Preacher cutout has too little visible subject. Refusing to generate a fake-preacher thumbnail.');
+  }
+}
+
+async function captureVideoFrame(videoId, seconds) {
+  const out = path.join(os.tmpdir(), `preacher-frame-${Date.now()}.jpg`);
+  console.log(`Capturing preacher frame around ${seconds}s...`);
+  const mediaUrls = await run('yt-dlp', ['-f', 'bv*[height<=720]/b[height<=720]/best', '-g', `https://www.youtube.com/watch?v=${videoId}&t=${seconds}s`]);
+  const mediaUrl = mediaUrls.split('\n').find(Boolean);
+  if (!mediaUrl) throw new Error('yt-dlp did not return a media URL.');
+  await run('ffmpeg', ['-y', '-ss', String(seconds), '-i', mediaUrl, '-frames:v', '1', '-q:v', '2', out]);
+  await fsp.access(out);
+  await assertValidFrame(out);
+  return out;
+}
+
+async function getInputPreacherImage(video) {
   if (CUTOUT_PATH && fs.existsSync(CUTOUT_PATH)) {
     console.log(`Using provided CUTOUT_PATH: ${CUTOUT_PATH}`);
+    await assertValidCutout(CUTOUT_PATH);
     return CUTOUT_PATH;
   }
   if (PREACHER_IMAGE_URL) {
     console.log('Using provided preacher_image_url.');
-    return downloadImage(PREACHER_IMAGE_URL, 'preacher-input');
+    const p = await downloadImage(PREACHER_IMAGE_URL, 'preacher-input');
+    await assertValidFrame(p);
+    return p;
   }
   const duration = parseDurationSeconds(video?.contentDetails?.duration);
-  const seconds = Math.min(Math.max(Math.round(duration * 0.42), 1800), 3900);
-  return captureVideoFrame(VIDEO_ID, seconds, fallbackThumbUrl);
+  const base = Math.min(Math.max(Math.round(duration * 0.42), 1800), 3900);
+  const attempts = [base, base + 120, base + 300, base + 600].filter((s) => s > 0 && s < duration - 10);
+  let lastErr = null;
+  for (const seconds of attempts) {
+    try {
+      return await captureVideoFrame(VIDEO_ID, seconds);
+    } catch (err) {
+      lastErr = err;
+      console.warn(`Frame attempt at ${seconds}s failed: ${err.message}`);
+    }
+  }
+  throw new Error(`Could not capture a valid preacher frame from YouTube. This is usually YouTube bot verification blocking yt-dlp. No thumbnail was generated because that would risk a fake preacher. Last error: ${lastErr ? lastErr.message : 'unknown error'}`);
 }
 
 function cover(ctx, img, x, y, w, h, fx = 0.5, fy = 0.5) {
@@ -202,12 +278,12 @@ async function fitImageToJpg(inputPath, outputPath, width = 1280, height = 720) 
 
 async function makeRembgCutout(inputPath) {
   if (CUTOUT_PATH && fs.existsSync(CUTOUT_PATH)) {
-    // Normalize existing cutout to PNG artifact name.
     const img = await loadImage(CUTOUT_PATH);
     const canvas = createCanvas(img.width, img.height);
     const ctx = canvas.getContext('2d');
     ctx.drawImage(img, 0, 0);
     await fsp.writeFile(CUTOUT_OUT, canvas.toBuffer('image/png'));
+    await assertValidCutout(CUTOUT_OUT);
     return CUTOUT_OUT;
   }
 
@@ -219,7 +295,6 @@ import sys
 inp, out = sys.argv[1], sys.argv[2]
 img = Image.open(inp).convert('RGBA')
 result = remove(img)
-# Crop around the preacher, ignoring the lowest clutter-heavy area.
 alpha = result.getchannel('A')
 w, h = result.size
 scan = alpha.crop((0, 0, w, int(h * 0.82)))
@@ -239,6 +314,7 @@ result.save(out)
   await run('python3', [py, inputPath, CUTOUT_OUT]);
   await fsp.access(CUTOUT_OUT);
   console.log(`Created ${CUTOUT_OUT}`);
+  await assertValidCutout(CUTOUT_OUT);
   return CUTOUT_OUT;
 }
 
@@ -323,12 +399,11 @@ async function fileInput(p) {
 }
 
 async function generateFinalWithOpenAI({ bgPath, cutoutPath, title, speaker, subtitle, style }) {
+  await assertValidCutout(cutoutPath);
   console.log(`Creating FINAL thumbnail composition with OpenAI image model ${MODEL}...`);
 
   const imageInputs = [await fileInput(bgPath), await fileInput(cutoutPath)];
-  for (const p of styleAnchorPaths()) {
-    imageInputs.push(await fileInput(p));
-  }
+  for (const p of styleAnchorPaths()) imageInputs.push(await fileInput(p));
 
   const rsp = await openai.images.edit({
     model: MODEL,
@@ -349,7 +424,7 @@ async function generateFinalWithOpenAI({ bgPath, cutoutPath, title, speaker, sub
 
 async function main() {
   console.log('Running safe test thumbnail workflow. Wix will not be touched.');
-  console.log('Mode: OpenAI image model FINAL composition.');
+  console.log('Mode: OpenAI image model FINAL composition with preacher validation.');
 
   let video = null;
   if (VIDEO_ID) {
@@ -361,8 +436,6 @@ async function main() {
   const title = SERMON_TITLE || TEST_TITLE || lineValue(description, ['Sermon Title', 'Title']) || stripVideoTitle(video?.snippet?.title || 'Sermon');
   const speaker = MINISTER_NAME || TEST_SPEAKER || lineValue(description, ['Speaker', 'Preacher', 'Minister']) || 'Bethel Tabernacle';
   const subtitle = normalizeSubtitle(SERMON_SUBTITLE || TEST_SUBTITLE || lineValue(description, ['Subtitle', 'Sub Title', 'Part']) || '');
-  const thumbs = video?.snippet?.thumbnails || {};
-  const fallbackThumbUrl = (thumbs.maxres || thumbs.standard || thumbs.high || thumbs.medium || thumbs.default || {}).url;
   const style = chooseStyle(title);
 
   console.log(`Title: ${title}`);
@@ -370,7 +443,7 @@ async function main() {
   if (subtitle) console.log(`Subtitle: ${subtitle}`);
   console.log(`Style mode: ${style.id}`);
 
-  const preacherInput = await getInputPreacherImage(video, fallbackThumbUrl);
+  const preacherInput = await getInputPreacherImage(video);
   const cutoutPath = await makeRembgCutout(preacherInput);
   const bgPath = await makeBackgroundBase(title, speaker, subtitle, style);
   await generateFinalWithOpenAI({ bgPath, cutoutPath, title, speaker, subtitle, style });
@@ -379,6 +452,6 @@ async function main() {
 }
 
 main().catch((err) => {
-  console.error(err);
+  console.error(err.message || err);
   process.exit(1);
 });
