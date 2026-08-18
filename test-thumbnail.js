@@ -2,9 +2,12 @@
  * Manual thumbnail test runner.
  * Generates test-thumbnail.jpg only. Does not upload to Wix or change site data.
  *
- * The preacher is NOT redrawn by OpenAI. OpenAI is only used for the scenic
- * background. The preacher cutout is made locally with rembg's Python API so
- * the real photo pixels are preserved.
+ * This keeps the working JavaScript workflow, but tunes the output closer to the
+ * approved Bethel thumbnail style:
+ * - OpenAI is used only for the scenic background.
+ * - rembg Python API removes the preacher background without repainting the face.
+ * - the real preacher cutout is cropped tighter to reduce pulpit/iPad/mic clutter.
+ * - code renders exact title/speaker/church text for reliable spelling.
  */
 
 const { createCanvas, loadImage, registerFont } = require('canvas');
@@ -25,13 +28,24 @@ const {
   TEST_SPEAKER,
   TEST_SUBTITLE,
   STYLE_MODE,
+  BG_PATH,
+  CUTOUT_PATH,
+  OUT_PATH,
+  MINISTER_NAME,
+  SERMON_TITLE,
+  SERMON_SUBTITLE,
+  CHURCH_NAME,
 } = process.env;
 
-if (!PREACHER_IMAGE_URL && !VIDEO_ID) {
-  throw new Error('Provide either PREACHER_IMAGE_URL or VIDEO_ID. PREACHER_IMAGE_URL gives the best test result.');
+if (!PREACHER_IMAGE_URL && !VIDEO_ID && !CUTOUT_PATH) {
+  throw new Error('Provide PREACHER_IMAGE_URL, VIDEO_ID, or CUTOUT_PATH. PREACHER_IMAGE_URL gives the best test result.');
 }
 
 const openai = OPENAI_API_KEY ? new OpenAI({ apiKey: OPENAI_API_KEY }) : null;
+const FINAL_OUT = OUT_PATH || 'test-thumbnail.jpg';
+const CHURCH = CHURCH_NAME || 'Bethel Tabernacle';
+const DEFAULT_CUTOUT_OUT = 'preacher-cutout.png';
+const AI_BG_OUT = 'ai-background.png';
 
 function tryFont(file, family, weight = 'normal', style = 'normal') {
   try {
@@ -48,19 +62,23 @@ tryFont(path.join(__dirname, 'assets', 'DejaVuSans-Bold.ttf'), 'Bethel Sans Fall
 
 const STYLES = {
   purple_mountain: {
-    outer: '#62547d', overlay: 'rgba(65,50,105,0.50)', accent: '#cbb8ff',
-    prompt: 'purple mountain style, soft lavender and blue color grade, snowy mountain backdrop, rounded translucent panel, elegant premium church thumbnail',
+    outer: '#62547d', overlay: 'rgba(90,70,135,0.36)', accent: '#d8caff',
+    tint: 'rgba(98,84,125,0.18)',
+    prompt: 'purple mountain style, soft lavender and blue color grade, snowy mountain backdrop, gentle clouds, premium elegant sermon thumbnail',
   },
   forest_green: {
-    outer: '#0b526f', overlay: 'rgba(8,24,30,0.40)', accent: '#dcefff',
-    prompt: 'deep forest green and blue mountain style, tall evergreen forest, strong scenic depth, premium sermon thumbnail',
+    outer: '#0b526f', overlay: 'rgba(18,70,82,0.30)', accent: '#dcefff',
+    tint: 'rgba(20,84,82,0.16)',
+    prompt: 'deep forest green and blue mountain style, tall evergreen forest, soft atmospheric depth, premium sermon thumbnail',
   },
   blue_lake: {
-    outer: '#08739d', overlay: 'rgba(13,56,88,0.38)', accent: '#c7e9ff',
-    prompt: 'cool blue lake style, calm mountain lake, misty blue valley, clean classic sermon thumbnail',
+    outer: '#08739d', overlay: 'rgba(18,75,112,0.30)', accent: '#c7e9ff',
+    tint: 'rgba(18,94,135,0.16)',
+    prompt: 'cool blue lake style, calm mountain lake, misty valley, clean classic premium sermon thumbnail',
   },
   warm_tan: {
-    outer: '#8a6745', overlay: 'rgba(177,130,75,0.42)', accent: '#ffe1aa',
+    outer: '#8a6745', overlay: 'rgba(175,130,80,0.32)', accent: '#ffe1aa',
+    tint: 'rgba(160,112,65,0.16)',
     prompt: 'warm tan and gold style, soft autumn mountain edges, premium beige panel, gentle church thumbnail',
   },
 };
@@ -156,6 +174,10 @@ async function captureVideoFrame(videoId, seconds, fallbackThumbUrl) {
 }
 
 async function getInputPreacherImage(video, fallbackThumbUrl) {
+  if (CUTOUT_PATH && fs.existsSync(CUTOUT_PATH)) {
+    console.log(`Using provided CUTOUT_PATH: ${CUTOUT_PATH}`);
+    return CUTOUT_PATH;
+  }
   if (PREACHER_IMAGE_URL) {
     console.log('Using provided preacher_image_url.');
     return downloadImage(PREACHER_IMAGE_URL, 'preacher-input');
@@ -163,73 +185,6 @@ async function getInputPreacherImage(video, fallbackThumbUrl) {
   const duration = parseDurationSeconds(video?.contentDetails?.duration);
   const seconds = Math.min(Math.max(Math.round(duration * 0.42), 1800), 3900);
   return captureVideoFrame(VIDEO_ID, seconds, fallbackThumbUrl);
-}
-
-async function getAlphaStats(pngPath) {
-  const img = await loadImage(pngPath);
-  const c = createCanvas(img.width, img.height);
-  const cx = c.getContext('2d');
-  cx.drawImage(img, 0, 0);
-  const d = cx.getImageData(0, 0, img.width, img.height).data;
-  let transparent = 0;
-  let semiOrTransparent = 0;
-  const total = img.width * img.height;
-  for (let i = 3; i < d.length; i += 4) {
-    if (d[i] < 10) transparent++;
-    if (d[i] < 250) semiOrTransparent++;
-  }
-  return { total, transparent, semiOrTransparent, transparentRatio: transparent / total, nonOpaqueRatio: semiOrTransparent / total };
-}
-
-async function makeLocalCutout(inputPath) {
-  const out = path.join(process.cwd(), 'preacher-cutout.png');
-  console.log('Removing preacher background locally with rembg Python API so the real photo is preserved...');
-
-  const py = `
-from pathlib import Path
-import sys
-from rembg import remove
-inp, outp = sys.argv[1], sys.argv[2]
-Path(outp).write_bytes(remove(Path(inp).read_bytes()))
-`;
-  await run('python3', ['-c', py, inputPath, out]);
-  await fsp.access(out);
-
-  const stats = await getAlphaStats(out);
-  console.log(`Cutout alpha check: transparent ${(stats.transparentRatio * 100).toFixed(1)}%, non-opaque ${(stats.nonOpaqueRatio * 100).toFixed(1)}%.`);
-
-  if (stats.transparentRatio < 0.08 && stats.nonOpaqueRatio < 0.10) {
-    throw new Error('Background removal did not create meaningful transparency. The cutout would still be a rectangle, so stopping instead of making a bad thumbnail.');
-  }
-  return out;
-}
-
-async function makeBackground(title, speaker, subtitle, style) {
-  if (!openai) return null;
-  const prompt = [
-    'Create a beautiful 16:9 sermon thumbnail background only. No people, no faces, no text, no letters, no logos, no watermark.',
-    'Use this Bethel Tabernacle established style:', style.prompt + '.',
-    'Premium church YouTube thumbnail background: scenic nature, rounded card/panel feel, soft color grade, elegant atmosphere, readable negative space on the left for large sermon title text.',
-    'Leave visual room on the right for a preacher cutout. Use mountains, forest, lake, valley, mist, or sunrise/sunset glow. Fresh design, not a copy.',
-    `Sermon title mood: ${title}. Speaker: ${speaker}. ${subtitle ? `Subtitle: ${subtitle}.` : ''}`,
-  ].join(' ');
-  try {
-    const rsp = await openai.images.generate({
-      model: 'gpt-image-2',
-      prompt,
-      size: '1536x1024',
-      quality: 'high',
-      output_format: 'png',
-    });
-    const b64 = rsp?.data?.[0]?.b64_json;
-    if (!b64) return null;
-    const out = path.join(process.cwd(), 'ai-background.png');
-    await fsp.writeFile(out, Buffer.from(b64, 'base64'));
-    return out;
-  } catch (err) {
-    console.warn(`OpenAI background generation failed: ${err.message}`);
-    return null;
-  }
 }
 
 function roundRect(ctx, x, y, w, h, r) {
@@ -251,15 +206,54 @@ function cover(ctx, img, x, y, w, h, fx = 0.5, fy = 0.5) {
   ctx.drawImage(img, sx, sy, sw, sh, x, y, w, h);
 }
 
-function alphaTrim(img) {
-  const c = createCanvas(img.width, img.height);
-  const cx = c.getContext('2d');
-  cx.drawImage(img, 0, 0);
-  const d = cx.getImageData(0, 0, img.width, img.height).data;
-  let minX = img.width, minY = img.height, maxX = -1, maxY = -1;
-  for (let y = 0; y < img.height; y++) {
-    for (let x = 0; x < img.width; x++) {
-      if (d[(y * img.width + x) * 4 + 3] > 12) {
+function containDraw(ctx, img, sx, sy, sw, sh, x, y, w, h, anchorBottom = true) {
+  const scale = Math.min(w / sw, h / sh);
+  const dw = sw * scale;
+  const dh = sh * scale;
+  const dx = x + (w - dw) / 2;
+  const dy = anchorBottom ? y + h - dh : y + (h - dh) / 2;
+  ctx.drawImage(img, sx, sy, sw, sh, dx, dy, dw, dh);
+}
+
+function parseRgba(str) {
+  const m = String(str).match(/rgba?\(([^)]+)\)/);
+  if (!m) return [0, 0, 0, 0];
+  const parts = m[1].split(',').map((p) => p.trim());
+  const r = Number(parts[0] || 0);
+  const g = Number(parts[1] || 0);
+  const b = Number(parts[2] || 0);
+  const a = parts[3] === undefined ? 1 : Number(parts[3]);
+  return [r, g, b, Math.round(a * 255)];
+}
+
+function canvasToPngBuffer(canvas) {
+  return canvas.toBuffer('image/png');
+}
+
+function getAlphaStatsFromCanvas(canvas) {
+  const ctx = canvas.getContext('2d');
+  const { width, height } = canvas;
+  const d = ctx.getImageData(0, 0, width, height).data;
+  let transparent = 0;
+  let nonOpaque = 0;
+  const total = width * height;
+  for (let i = 3; i < d.length; i += 4) {
+    if (d[i] < 10) transparent++;
+    if (d[i] < 250) nonOpaque++;
+  }
+  return { transparentRatio: transparent / total, nonOpaqueRatio: nonOpaque / total };
+}
+
+function findAlphaBox(canvas, { ignoreLower = 0 } = {}) {
+  const ctx = canvas.getContext('2d');
+  const { width, height } = canvas;
+  const d = ctx.getImageData(0, 0, width, height).data;
+  let minX = width, minY = height, maxX = -1, maxY = -1;
+  const yLimit = Math.max(1, Math.floor(height * (1 - ignoreLower)));
+  for (let y = 0; y < yLimit; y++) {
+    for (let x = 0; x < width; x++) {
+      const a = d[(y * width + x) * 4 + 3];
+      if (a > 12) {
         minX = Math.min(minX, x);
         minY = Math.min(minY, y);
         maxX = Math.max(maxX, x);
@@ -268,23 +262,128 @@ function alphaTrim(img) {
     }
   }
   if (maxX < minX) return null;
-  return {
-    x: Math.max(0, minX - 8),
-    y: Math.max(0, minY - 8),
-    w: Math.min(img.width - Math.max(0, minX - 8), maxX - minX + 17),
-    h: Math.min(img.height - Math.max(0, minY - 8), maxY - minY + 17),
-  };
+  return { x: minX, y: minY, w: maxX - minX + 1, h: maxY - minY + 1 };
 }
 
-function drawCutoutContain(ctx, img, trim, x, y, w, h) {
-  const sx = trim?.x ?? 0;
-  const sy = trim?.y ?? 0;
-  const sw = trim?.w ?? img.width;
-  const sh = trim?.h ?? img.height;
-  const s = Math.min(w / sw, h / sh);
-  const dw = sw * s;
-  const dh = sh * s;
-  ctx.drawImage(img, sx, sy, sw, sh, x + (w - dw) / 2, y + h - dh, dw, dh);
+async function makeRembgCutout(inputPath) {
+  const rawOut = path.join(os.tmpdir(), `rembg-raw-${Date.now()}.png`);
+  const py = path.join(os.tmpdir(), `rembg-api-${Date.now()}.py`);
+  const pyCode = `
+from rembg import remove
+from PIL import Image
+import sys
+inp, out = sys.argv[1], sys.argv[2]
+img = Image.open(inp).convert('RGBA')
+result = remove(img)
+result.save(out)
+`;
+  await fsp.writeFile(py, pyCode);
+  await run('python3', [py, inputPath, rawOut]);
+  await fsp.access(rawOut);
+  return rawOut;
+}
+
+async function makeLocalCutout(inputPath) {
+  const out = path.join(process.cwd(), DEFAULT_CUTOUT_OUT);
+
+  if (CUTOUT_PATH && fs.existsSync(CUTOUT_PATH)) {
+    console.log('Using existing cutout and applying cleaner crop.');
+    await cleanAndCropCutout(CUTOUT_PATH, out);
+    return out;
+  }
+
+  console.log('Removing preacher background locally with rembg Python API so the real photo is preserved...');
+  const raw = await makeRembgCutout(inputPath);
+  await cleanAndCropCutout(raw, out);
+
+  const check = createCanvas(1, 1);
+  const img = await loadImage(out);
+  check.width = img.width;
+  check.height = img.height;
+  const c = check.getContext('2d');
+  c.drawImage(img, 0, 0);
+  const stats = getAlphaStatsFromCanvas(check);
+  console.log(`Cutout alpha check: transparent ${(stats.transparentRatio * 100).toFixed(1)}%, non-opaque ${(stats.nonOpaqueRatio * 100).toFixed(1)}%.`);
+  if (stats.transparentRatio < 0.08 && stats.nonOpaqueRatio < 0.10) {
+    throw new Error('Background removal did not create meaningful transparency. Stopping instead of making a bad rectangle thumbnail.');
+  }
+  return out;
+}
+
+async function cleanAndCropCutout(inputPng, outputPng) {
+  const img = await loadImage(inputPng);
+  const src = createCanvas(img.width, img.height);
+  const srcCtx = src.getContext('2d');
+  srcCtx.drawImage(img, 0, 0);
+
+  // Ignore the lowest part of the frame when finding the useful preacher box.
+  // This cuts away most pulpit/iPad/mic clutter while keeping a waist/chest-up crop.
+  let box = findAlphaBox(src, { ignoreLower: 0.18 }) || findAlphaBox(src) || { x: 0, y: 0, w: img.width, h: img.height };
+
+  const padX = Math.round(box.w * 0.055);
+  const padTop = Math.round(box.h * 0.035);
+  const padBottom = Math.round(box.h * 0.020);
+  let x = Math.max(0, box.x - padX);
+  let y = Math.max(0, box.y - padTop);
+  let w = Math.min(img.width - x, box.w + padX * 2);
+  let h = Math.min(img.height - y, box.h + padTop + padBottom);
+
+  // Extra lower trim for screenshots where the pulpit/mic survives rembg.
+  h = Math.round(h * 0.88);
+
+  const out = createCanvas(w, h);
+  const outCtx = out.getContext('2d');
+  outCtx.drawImage(img, x, y, w, h, 0, 0, w, h);
+  await fsp.writeFile(outputPng, canvasToPngBuffer(out));
+}
+
+async function makeBackground(title, speaker, subtitle, style) {
+  if (BG_PATH && fs.existsSync(BG_PATH)) {
+    console.log(`Using provided BG_PATH: ${BG_PATH}`);
+    if (BG_PATH !== AI_BG_OUT) await fsp.copyFile(BG_PATH, AI_BG_OUT).catch(() => {});
+    return BG_PATH;
+  }
+  if (!openai) return null;
+
+  const prompt = [
+    'Create a beautiful 16:9 sermon thumbnail background only. Absolutely no people, no faces, no text, no letters, no logos, no watermark.',
+    'Use this established Bethel Tabernacle visual style:', style.prompt + '.',
+    'Premium church YouTube thumbnail feel: scenic nature background, soft mountains/lake/forest/sky, elegant depth, rounded-panel-friendly composition, gentle cinematic color grade.',
+    'Keep the left side clean and slightly darker for large sermon title text. Leave open visual room on the right for a preacher cutout. Fresh design, not a duplicate.',
+    `Sermon title mood: ${title}. Speaker: ${speaker}. ${subtitle ? `Subtitle: ${subtitle}.` : ''}`,
+  ].join(' ');
+
+  try {
+    const rsp = await openai.images.generate({
+      model: 'gpt-image-2',
+      prompt,
+      size: '1536x1024',
+      quality: 'high',
+      output_format: 'png',
+    });
+    const b64 = rsp?.data?.[0]?.b64_json;
+    if (!b64) return null;
+    const out = path.join(process.cwd(), AI_BG_OUT);
+    await fsp.writeFile(out, Buffer.from(b64, 'base64'));
+    return out;
+  } catch (err) {
+    console.warn(`OpenAI background generation failed: ${err.message}`);
+    return null;
+  }
+}
+
+function drawFallbackBackground(ctx, style) {
+  const grad = ctx.createLinearGradient(0, 0, 1280, 720);
+  grad.addColorStop(0, '#1a2240');
+  grad.addColorStop(1, style.outer);
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, 1280, 720);
+  ctx.save();
+  roundRect(ctx, 36, 42, 1208, 636, 30);
+  ctx.clip();
+  ctx.fillStyle = 'rgba(255,255,255,0.08)';
+  ctx.fillRect(36, 42, 1208, 636);
+  ctx.restore();
 }
 
 function wrapText(ctx, text, maxWidth) {
@@ -304,21 +403,35 @@ function wrapText(ctx, text, maxWidth) {
   return lines;
 }
 
+function fitTitle(ctx, title, maxWidth) {
+  for (let size = 88; size >= 54; size -= 2) {
+    ctx.font = `${size}px "Bethel Serif", Georgia, serif`;
+    const lines = wrapText(ctx, title, maxWidth);
+    if (lines.length <= 4) return { size, lines };
+  }
+  ctx.font = '54px "Bethel Serif", Georgia, serif';
+  return { size: 54, lines: wrapText(ctx, title, maxWidth).slice(0, 4) };
+}
+
 function titleCase(name) {
   return String(name || '').replace(/\w\S*/g, (p) => p[0].toUpperCase() + p.slice(1).toLowerCase());
 }
 
-function drawFallbackBackground(ctx, style) {
-  const grad = ctx.createLinearGradient(0, 0, 1280, 720);
-  grad.addColorStop(0, '#1a2240');
-  grad.addColorStop(1, style.outer);
-  ctx.fillStyle = grad;
-  ctx.fillRect(0, 0, 1280, 720);
+function drawChurchPill(ctx, text, x, y) {
+  ctx.font = '22px "Bethel Sans", Arial, sans-serif';
+  const label = String(text || 'Bethel Tabernacle').toUpperCase();
+  const metrics = ctx.measureText(label);
+  const w = Math.ceil(metrics.width + 54);
+  const h = 50;
   ctx.save();
-  roundRect(ctx, 36, 42, 1208, 636, 30);
-  ctx.clip();
-  ctx.fillStyle = 'rgba(255,255,255,0.08)';
-  ctx.fillRect(36, 42, 1208, 636);
+  ctx.strokeStyle = 'rgba(255,255,255,0.92)';
+  ctx.fillStyle = 'rgba(0,0,0,0.10)';
+  ctx.lineWidth = 2.3;
+  roundRect(ctx, x, y, w, h, 23);
+  ctx.fill();
+  ctx.stroke();
+  ctx.fillStyle = 'rgba(255,255,255,0.96)';
+  ctx.fillText(label, x + 27, y + 33);
   ctx.restore();
 }
 
@@ -336,90 +449,109 @@ async function compose({ preacherPath, title, speaker, subtitle }) {
 
   if (bgPath) {
     const bg = await loadImage(bgPath);
-    ctx.save();
-    roundRect(ctx, 36, 42, 1208, 636, 30);
-    ctx.clip();
-    cover(ctx, bg, 36, 42, 1208, 636);
-    ctx.restore();
+    cover(ctx, bg, 0, 0, 1280, 720, 0.50, 0.50);
   } else {
     drawFallbackBackground(ctx, style);
   }
 
+  // Unified soft tint, like the approved manual thumbnails.
+  const [tr, tg, tb, ta] = parseRgba(style.tint);
+  ctx.fillStyle = `rgba(${tr},${tg},${tb},${ta / 255})`;
+  ctx.fillRect(0, 0, 1280, 720);
+
+  // Rounded inner card and subtle glass panel.
   ctx.save();
   roundRect(ctx, 36, 42, 1208, 636, 30);
   ctx.clip();
-  ctx.fillStyle = style.overlay;
+  ctx.fillStyle = 'rgba(255,255,255,0.035)';
   ctx.fillRect(36, 42, 1208, 636);
-  const shade = ctx.createLinearGradient(36, 0, 780, 0);
-  shade.addColorStop(0, 'rgba(0,0,0,0.30)');
-  shade.addColorStop(0.7, 'rgba(0,0,0,0.06)');
-  shade.addColorStop(1, 'rgba(0,0,0,0)');
-  ctx.fillStyle = shade;
-  ctx.fillRect(36, 42, 820, 636);
+
+  const leftShade = ctx.createLinearGradient(36, 0, 790, 0);
+  leftShade.addColorStop(0, 'rgba(16,12,28,0.28)');
+  leftShade.addColorStop(0.70, 'rgba(16,12,28,0.05)');
+  leftShade.addColorStop(1, 'rgba(16,12,28,0)');
+  ctx.fillStyle = leftShade;
+  ctx.fillRect(36, 42, 830, 636);
   ctx.restore();
-  ctx.strokeStyle = 'rgba(255,255,255,0.17)';
+
+  ctx.save();
+  ctx.strokeStyle = 'rgba(255,255,255,0.18)';
   ctx.lineWidth = 2;
   roundRect(ctx, 36, 42, 1208, 636, 30);
   ctx.stroke();
-
-  const preacher = await loadImage(cutoutPath);
-  const trim = alphaTrim(preacher);
-  if (!trim) throw new Error('Could not find preacher pixels in the transparent cutout.');
-  ctx.save();
-  ctx.shadowColor = 'rgba(0,0,0,0.45)';
-  ctx.shadowBlur = 22;
-  ctx.shadowOffsetX = -7;
-  ctx.shadowOffsetY = 10;
-  drawCutoutContain(ctx, preacher, trim, 700, 34, 600, 704);
   ctx.restore();
 
-  ctx.fillStyle = '#fff';
-  ctx.font = '40px "Bethel Serif", Georgia, serif';
-  ctx.fillText(titleCase(speaker), 112, 145);
+  // Left frosted text panel.
+  ctx.save();
+  ctx.fillStyle = 'rgba(245,240,255,0.18)';
+  ctx.strokeStyle = 'rgba(255,255,255,0.34)';
+  ctx.lineWidth = 1.6;
+  roundRect(ctx, 60, 58, 725, 588, 26);
+  ctx.fill();
+  ctx.stroke();
 
-  let size = title.length > 42 ? 76 : title.length > 28 ? 88 : 104;
-  let lines;
-  do {
-    ctx.font = `${size}px "Bethel Serif", Georgia, serif`;
-    lines = wrapText(ctx, title, 610);
-    if (lines.length > 4) size -= 4;
-  } while (lines.length > 4 && size > 58);
+  ctx.fillStyle = 'rgba(55,42,88,0.16)';
+  roundRect(ctx, 76, 58, 34, 588, 17);
+  ctx.fill();
+  ctx.restore();
 
-  let y = lines.length >= 4 ? 240 : 280;
-  const gap = size * 0.87;
-  for (const line of lines.slice(0, 4)) {
-    ctx.fillStyle = '#fff';
+  // Preacher cutout: larger and cleaner on the right.
+  const preacher = await loadImage(cutoutPath);
+  const pc = createCanvas(preacher.width, preacher.height);
+  pc.getContext('2d').drawImage(preacher, 0, 0);
+  const trim = findAlphaBox(pc) || { x: 0, y: 0, w: preacher.width, h: preacher.height };
+
+  ctx.save();
+  ctx.shadowColor = 'rgba(0,0,0,0.48)';
+  ctx.shadowBlur = 26;
+  ctx.shadowOffsetX = -10;
+  ctx.shadowOffsetY = 12;
+  containDraw(ctx, preacher, trim.x, trim.y, trim.w, trim.h, 770, 78, 485, 625, true);
+  ctx.restore();
+
+  // Text.
+  const white = 'rgba(252,249,255,0.97)';
+  ctx.fillStyle = white;
+  ctx.font = '30px "Bethel Serif", Georgia, serif';
+  ctx.fillText(titleCase(speaker), 112, 126);
+
+  const { size, lines } = fitTitle(ctx, title, 565);
+  ctx.font = `${size}px "Bethel Serif", Georgia, serif`;
+  ctx.fillStyle = white;
+  let y = lines.length >= 4 ? 220 : 255;
+  const gap = size * 0.88;
+  for (const line of lines) {
     ctx.fillText(line, 112, y);
     y += gap;
   }
 
+  let buttonY = y + 38;
   if (subtitle) {
     const sub = normalizeSubtitle(subtitle);
-    ctx.strokeStyle = style.accent;
-    ctx.globalAlpha = 0.86;
-    ctx.lineWidth = 3;
+    const subY = y + 20;
+    ctx.save();
+    ctx.strokeStyle = 'rgba(245,240,255,0.76)';
+    ctx.lineWidth = 2;
     ctx.beginPath();
-    ctx.moveTo(112, y + 12);
-    ctx.lineTo(210, y + 12);
-    ctx.moveTo(475, y + 12);
-    ctx.lineTo(575, y + 12);
+    ctx.moveTo(112, subY + 14);
+    ctx.lineTo(205, subY + 14);
     ctx.stroke();
-    ctx.globalAlpha = 1;
-    ctx.font = '54px "Bethel Serif", Georgia, serif';
-    ctx.fillStyle = '#fff';
-    ctx.fillText(sub, 232, y + 28);
+    ctx.font = '38px "Bethel Serif", Georgia, serif';
+    ctx.fillStyle = white;
+    ctx.fillText(sub, 226, subY + 28);
+    const subWidth = ctx.measureText(sub).width;
+    ctx.beginPath();
+    ctx.moveTo(246 + subWidth, subY + 14);
+    ctx.lineTo(340 + subWidth, subY + 14);
+    ctx.stroke();
+    ctx.restore();
+    buttonY = subY + 78;
   }
 
-  const tagX = 112, tagY = 595, tagW = 405, tagH = 58;
-  ctx.strokeStyle = '#fff';
-  ctx.lineWidth = 2.5;
-  roundRect(ctx, tagX, tagY, tagW, tagH, 26);
-  ctx.stroke();
-  ctx.font = '29px "Bethel Sans", Arial, sans-serif';
-  ctx.fillStyle = '#fff';
-  ctx.fillText('BETHEL TABERNACLE', tagX + 33, tagY + 39);
+  drawChurchPill(ctx, CHURCH, 112, Math.min(buttonY, 585));
 
-  await fsp.writeFile('test-thumbnail.jpg', canvas.toBuffer('image/jpeg', { quality: 0.94 }));
+  await fsp.writeFile(FINAL_OUT, canvas.toBuffer('image/jpeg', { quality: 0.95 }));
+  console.log(`Created ${FINAL_OUT}`);
 }
 
 async function main() {
@@ -431,9 +563,9 @@ async function main() {
   }
 
   const description = video?.snippet?.description || '';
-  const title = TEST_TITLE || lineValue(description, ['Sermon Title', 'Title']) || stripVideoTitle(video?.snippet?.title || 'Sermon');
-  const speaker = TEST_SPEAKER || lineValue(description, ['Speaker', 'Preacher', 'Minister']) || 'Bethel Tabernacle';
-  const subtitle = normalizeSubtitle(TEST_SUBTITLE || lineValue(description, ['Subtitle', 'Sub Title', 'Part']) || '');
+  const title = SERMON_TITLE || TEST_TITLE || lineValue(description, ['Sermon Title', 'Title']) || stripVideoTitle(video?.snippet?.title || 'Sermon');
+  const speaker = MINISTER_NAME || TEST_SPEAKER || lineValue(description, ['Speaker', 'Preacher', 'Minister']) || 'Bethel Tabernacle';
+  const subtitle = normalizeSubtitle(SERMON_SUBTITLE || TEST_SUBTITLE || lineValue(description, ['Subtitle', 'Sub Title', 'Part']) || '');
   const thumbs = video?.snippet?.thumbnails || {};
   const fallbackThumbUrl = (thumbs.maxres || thumbs.standard || thumbs.high || thumbs.medium || thumbs.default || {}).url;
 
@@ -443,7 +575,7 @@ async function main() {
 
   const preacherPath = await getInputPreacherImage(video, fallbackThumbUrl);
   await compose({ preacherPath, title, speaker, subtitle });
-  console.log('Created test-thumbnail.jpg, preacher-cutout.png, and ai-background.png if OpenAI background succeeded.');
+  console.log(`Created ${FINAL_OUT}, ${DEFAULT_CUTOUT_OUT}, and ${AI_BG_OUT} if OpenAI background succeeded.`);
 }
 
 main().catch((err) => {
