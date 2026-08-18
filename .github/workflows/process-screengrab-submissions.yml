@@ -1,0 +1,49 @@
+name: Process sermon screengrab uploads
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Test without updating Wix sermon thumbnail"
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
+
+jobs:
+  process:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Process latest screengrab submission
+        run: node process-screengrab-submissions.js
+        env:
+          WIX_API_KEY: ${{ secrets.WIX_API_KEY }}
+          WIX_SITE_ID: ${{ secrets.WIX_SITE_ID }}
+          YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_IMAGE_MODEL: gpt-image-2
+          STYLE_MODE: random
+          DRY_RUN: ${{ inputs.dry_run }}
+          FORM_ID: c2d24226-8540-46fb-b7ea-2eb2114bd190
+
+      - name: Upload processing artifacts
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: screengrab-processing-artifacts
+          path: |
+            submitted-screengrab.jpg
+            style-reference.png
+            generated-thumbnail.jpg
+            process-result.json
