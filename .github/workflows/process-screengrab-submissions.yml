@@ -43,7 +43,9 @@ jobs:
         with:
           name: screengrab-processing-artifacts
           path: |
+            original-submitted-screengrab.jpg
             submitted-screengrab.jpg
             style-reference.png
             generated-thumbnail.jpg
-            process-result.json
+            thumbnail-info.json
+            thumbnail-error.txt
