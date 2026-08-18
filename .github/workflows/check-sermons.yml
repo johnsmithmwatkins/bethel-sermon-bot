@@ -36,3 +36,17 @@ jobs:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           STYLE_MODE: random
           OPENAI_IMAGE_MODEL: gpt-image-2
+
+      - name: Process screengrab uploads
+        # This updates existing Wix sermon thumbnails from the hidden upload form.
+        # It is intentionally allowed to fail so a bad upload never blocks normal sermon posting.
+        continue-on-error: true
+        run: node process-screengrab-submissions.js
+        env:
+          YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
+          WIX_API_KEY: ${{ secrets.WIX_API_KEY }}
+          WIX_SITE_ID: ${{ secrets.WIX_SITE_ID }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          STYLE_MODE: random
+          OPENAI_IMAGE_MODEL: gpt-image-2
+          FORM_ID: c2d24226-8540-46fb-b7ea-2eb2114bd190
