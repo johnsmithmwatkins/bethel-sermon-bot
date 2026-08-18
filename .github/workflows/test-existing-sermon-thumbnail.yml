@@ -1,0 +1,80 @@
+name: Test existing sermon thumbnail
+
+on:
+  workflow_dispatch:
+    inputs:
+      video_id:
+        description: 'YouTube video ID for an existing sermon'
+        required: true
+        type: string
+      title:
+        description: 'Optional sermon title override'
+        required: false
+        type: string
+      speaker:
+        description: 'Optional minister/speaker override'
+        required: false
+        type: string
+      subtitle:
+        description: 'Optional subtitle, like Part Two'
+        required: false
+        type: string
+      style_mode:
+        description: 'Style mode: random, purple_mountain, forest_green, blue_lake, or warm_tan'
+        required: false
+        default: 'random'
+        type: choice
+        options:
+          - random
+          - purple_mountain
+          - forest_green
+          - blue_lake
+          - warm_tan
+
+jobs:
+  thumbnail-only:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install thumbnail tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg python3-pip fonts-liberation
+          python3 -m pip install --user --upgrade yt-dlp "rembg[cpu]" filetype watchdog aiohttp pillow onnxruntime
+          echo "$HOME/.local/bin" >> $GITHUB_PATH
+          python3 - <<'PY'
+          from rembg import remove
+          from PIL import Image
+          print('rembg Python API ready')
+          PY
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Generate thumbnail only
+        run: node test-thumbnail.js
+        env:
+          YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          VIDEO_ID: ${{ inputs.video_id }}
+          TEST_TITLE: ${{ inputs.title }}
+          TEST_SPEAKER: ${{ inputs.speaker }}
+          TEST_SUBTITLE: ${{ inputs.subtitle }}
+          STYLE_MODE: ${{ inputs.style_mode }}
+          OUT_PATH: test-thumbnail.jpg
+          CHURCH_NAME: Bethel Tabernacle
+
+      - name: Upload generated thumbnail artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: existing-sermon-thumbnail-test
+          path: |
+            test-thumbnail.jpg
+            preacher-cutout.png
+            ai-background.png
+          if-no-files-found: error
