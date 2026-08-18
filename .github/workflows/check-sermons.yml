@@ -16,11 +16,11 @@ jobs:
         with:
           node-version: '20'
 
-      - name: Install video tools
+      - name: Install video and thumbnail tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y ffmpeg python3-pip
-          python3 -m pip install --user --upgrade yt-dlp
+          sudo apt-get install -y ffmpeg python3-pip fonts-liberation
+          python3 -m pip install --user --upgrade yt-dlp "rembg[cpu]" pillow onnxruntime
           echo "$HOME/.local/bin" >> $GITHUB_PATH
 
       - name: Install dependencies
@@ -34,3 +34,5 @@ jobs:
           WIX_API_KEY: ${{ secrets.WIX_API_KEY }}
           WIX_SITE_ID: ${{ secrets.WIX_SITE_ID }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          STYLE_MODE: random
+          OPENAI_IMAGE_MODEL: gpt-image-2
