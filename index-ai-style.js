@@ -496,7 +496,15 @@ async function main() {
     const sourceThumb = (thumbs.maxres || thumbs.standard || thumbs.high || thumbs.medium || thumbs.default).url;
 
     console.log('  Building thumbnail...');
-    const jpegBuffer = await buildSafeThumbnail({ video, title, subtitle, speaker, dateStr, fallbackThumbUrl: sourceThumb });
+    // Youth Camp artwork is designed manually for YouTube. Preserve it exactly.
+    // Normal weekly sermons retain their custom OpenAI/fallback thumbnail workflow.
+    const isYouthCamp = /\byouth camp\b/i.test(
+      [video.snippet.title || '', video.snippet.description || ''].join(' ')
+    );
+    const jpegBuffer = isYouthCamp
+      ? await downloadThumbBuffer(sourceThumb)
+      : await buildSafeThumbnail({ video, title, subtitle, speaker, dateStr, fallbackThumbUrl: sourceThumb });
+    if (isYouthCamp) console.log('  Youth Camp: preserving the original YouTube thumbnail (no AI, no overlays).');
 
     console.log('  Uploading thumbnail to Wix...');
     const fileName = `sermon-${id}.jpg`;
