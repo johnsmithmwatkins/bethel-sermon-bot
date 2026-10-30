@@ -25,7 +25,7 @@ jobs:
       - name: Install dependencies
         run: npm install
 
-      - name: Process latest screengrab submission
+      - name: Process all pending screengrab submissions
         run: node process-screengrab-submissions.js
         env:
           WIX_API_KEY: ${{ secrets.WIX_API_KEY }}
@@ -44,8 +44,12 @@ jobs:
           name: screengrab-processing-artifacts
           path: |
             original-submitted-screengrab.jpg
+            submitted-screengrab-*.jpg
             submitted-screengrab.jpg
             style-reference.png
+            generated-thumbnail-*.jpg
             generated-thumbnail.jpg
+            submission-result-*.json
+            process-result.json
             thumbnail-info.json
             thumbnail-error.txt
