@@ -160,19 +160,34 @@ function getScreenGrabUrlFromSubmission(submission) {
   return findLikelyImageUrl(fields.screenGrab || fields.screengrab || fields.file || fields.upload || fields) || findLikelyImageUrl(submission);
 }
 
-async function queryRecentSubmissions() {
-  const data = await wix('/form-submission-service/v4/submissions/namespace/query', 'POST', {
-    query: {
-      filter: { formId: SCREENGRAB_FORM_ID, namespace: FORMS_NAMESPACE },
-      sort: [{ fieldName: 'createdDate', order: 'DESC' }],
-      paging: { limit: 10 },
-    },
-  });
-  return data.submissions || [];
+async function queryUnseenSubmissions() {
+  const all = [];
+  let cursor = null;
+  for (let page = 0; page < 20; page++) {
+    const query = cursor
+      ? { cursorPaging: { limit: 100, cursor } }
+      : {
+          filter: { formId: SCREENGRAB_FORM_ID, namespace: FORMS_NAMESPACE },
+          sort: [{ fieldName: 'createdDate', order: 'ASC' }],
+          cursorPaging: { limit: 100 },
+        };
+    const data = await wix('/form-submission-service/v4/submissions/namespace/query', 'POST', {
+      query,
+      onlyYourOwn: false,
+    });
+    all.push(...(data.submissions || []));
+    if (!data.metadata?.hasNext) {
+      console.log('Found ' + all.length + ' total submissions.');
+      return all.filter((s) => !s.seen);
+    }
+    cursor = data.metadata?.cursors?.next;
+    if (!cursor) throw new Error('Wix returned hasNext without a next cursor.');
+  }
+  throw new Error('Submission history exceeded 2000 entries; aborting rather than ignoring older uploads.');
 }
 
 async function markSubmissionSeen(submission) {
-  if (!submission.id || !submission.revision) return;
+  if (!submission.id || !submission.revision) throw new Error('Missing submission ID or revision; cannot mark processed.');
   await wix(`/form-submission-service/v4/submissions/${submission.id}`, 'PATCH', {
     submission: {
       id: submission.id,
@@ -193,7 +208,7 @@ async function findSermonByVideoId(videoId) {
 }
 
 async function patchSermonThumbnail(dataItemId, thumbnailRef) {
-  await wix('/wix-data/v2/bulk/items/patch', 'POST', {
+  const result = await wix('/wix-data/v2/bulk/items/patch', 'POST', {
     dataCollectionId: SERMONS_COLLECTION_ID,
     patches: [
       {
@@ -204,6 +219,11 @@ async function patchSermonThumbnail(dataItemId, thumbnailRef) {
       },
     ],
   });
+  if (result.bulkActionMetadata?.totalFailures > 0 ||
+      result.bulkActionMetadata?.totalSuccesses !== 1 ||
+      result.results?.[0]?.itemMetadata?.success === false) {
+    throw new Error('Wix bulk patch did not confirm success: ' + JSON.stringify(result));
+  }
 }
 
 async function getVideoDetails(videoId) {
@@ -376,12 +396,12 @@ Church label: BETHEL TABERNACLE
 Do not add icons. Do not add a temple icon. Do not add decorative flourishes. Do not add heavy gold badges. Do not add extra words. Do not use the word Speaker. Do not make it ornate. Prioritize clean spacing, simple hierarchy, and readability.`;
 }
 
-async function generateThumbnail({ screenshotBuffer, display }) {
+async function generateThumbnail({ screenshotBuffer, display, videoId }) {
   const style = chooseStyle();
   console.log(`Using style: ${style.id}`);
 
   const stylePath = await makeStyleReferenceImage(style);
-  const screenshotJpg = await preparePreacherReferenceJpeg(screenshotBuffer, 'submitted-screengrab.jpg');
+  const screenshotJpg = await preparePreacherReferenceJpeg(screenshotBuffer, 'submitted-screengrab-' + videoId + '.jpg');
 
   const form = new FormData();
   form.append('model', IMAGE_MODEL);
@@ -402,7 +422,7 @@ async function generateThumbnail({ screenshotBuffer, display }) {
   if (!b64) throw new Error(`OpenAI did not return b64_json: ${JSON.stringify(json)}`);
 
   const raw = Buffer.from(b64, 'base64');
-  return normalizeThumbnailToJpeg(raw, 'generated-thumbnail.jpg');
+  return normalizeThumbnailToJpeg(raw, 'generated-thumbnail-' + videoId + '.jpg');
 }
 
 async function uploadImageToWix(buffer, fileName) {
@@ -422,18 +442,7 @@ function wixImageRef(uploadedFile, fileName) {
   return `wix:image://v1/${uploadedFile.id}/${fileName}#originWidth=${imgInfo.width || 1280}&originHeight=${imgInfo.height || 720}`;
 }
 
-async function processLatestSubmission() {
-  console.log('Checking Wix Sermon Screengrab Upload submissions...');
-  const submissions = await queryRecentSubmissions();
-  console.log(`Found ${submissions.length} recent submissions.`);
-
-  const candidates = submissions.filter((s) => !s.seen);
-  if (!candidates.length) {
-    console.log('No unseen screengrab submissions to process.');
-    return { processed: false, reason: 'NO_UNSEEN_SUBMISSIONS' };
-  }
-
-  const submission = candidates[0];
+async function processSubmission(submission) {
   const youtubeUrl = getYoutubeUrlFromSubmission(submission);
   const videoId = extractVideoId(youtubeUrl);
   const screenGrabUrl = getScreenGrabUrlFromSubmission(submission);
@@ -478,7 +487,7 @@ async function processLatestSubmission() {
     dryRun: IS_DRY_RUN,
   }, null, 2)));
 
-  const thumbnailBuffer = await generateThumbnail({ screenshotBuffer, display });
+  const thumbnailBuffer = await generateThumbnail({ screenshotBuffer, display, videoId });
 
   if (IS_DRY_RUN) {
     console.log('DRY RUN: generated thumbnail but did not update Wix sermon or mark submission seen.');
@@ -495,12 +504,52 @@ async function processLatestSubmission() {
   return { processed: true, dryRun: false, videoId, sermonItemId: sermon.id };
 }
 
-processLatestSubmission()
-  .then(async (result) => {
-    await writeArtifact('process-result.json', Buffer.from(JSON.stringify(result, null, 2)));
+async function processAllSubmissions() {
+  console.log('Checking Wix Sermon Screengrab Upload submissions...');
+  const candidates = await queryUnseenSubmissions();
+  console.log('Found ' + candidates.length + ' unprocessed submissions.');
+  const results = [];
+  let processedCount = 0;
+  let skippedCount = 0;
+  let failedCount = 0;
+
+  // Oldest first: newest upload wins when two uploads target the same sermon.
+  for (let i = 0; i < candidates.length; i++) {
+    const submission = candidates[i];
+    console.log('Processing upload ' + (i + 1) + '/' + candidates.length);
+    try {
+      const result = await processSubmission(submission);
+      results.push({ submissionId: submission.id, ...result });
+      if (result.skipped) skippedCount++;
+      else if (result.processed) processedCount++;
+    } catch (err) {
+      failedCount++;
+      console.error('Failed submission ' + submission.id + ': ' + err.message);
+      results.push({ submissionId: submission.id, error: err.message });
+      // Leave failures unseen, and continue processing the other uploads.
+    }
+  }
+
+  const summary = {
+    totalPending: candidates.length,
+    processedCount,
+    skippedCount,
+    failedCount,
+    dryRun: IS_DRY_RUN,
+    results,
+  };
+  console.log('Batch complete: ' + processedCount + ' updated, ' +
+    skippedCount + ' skipped, ' + failedCount + ' failed.');
+  return summary;
+}
+
+processAllSubmissions()
+  .then(async (summary) => {
+    await writeArtifact('process-result.json', Buffer.from(JSON.stringify(summary, null, 2)));
+    if (summary.failedCount > 0) process.exitCode = 1;
   })
   .catch(async (err) => {
     console.error(err);
     await writeArtifact('process-result.json', Buffer.from(JSON.stringify({ error: err.message }, null, 2)));
-    process.exit(1);
+    process.exitCode = 1;
   });
