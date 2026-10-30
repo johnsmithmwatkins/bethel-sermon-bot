@@ -1,0 +1,48 @@
+name: Correct More of God Less of Me thumbnails
+
+on:
+  push:
+    paths:
+      - '.github/workflows/fix-more-of-god-series.yml'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Preview only without updating Wix'
+        required: false
+        default: 'false'
+        type: choice
+        options:
+          - 'false'
+          - 'true'
+
+permissions:
+  contents: read
+
+jobs:
+  fix-series:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Install dependencies
+        run: npm install
+      - name: Correct saved series thumbnail lettering
+        run: node fix-more-of-god-series.js
+        env:
+          WIX_API_KEY: ${{ secrets.WIX_API_KEY }}
+          WIX_SITE_ID: ${{ secrets.WIX_SITE_ID }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_IMAGE_MODEL: gpt-image-2
+          DRY_RUN: ${{ inputs.dry_run || 'false' }}
+      - name: Save corrected thumbnail previews and results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: more-of-god-series-corrections
+          path: |
+            corrected-part-*.jpg
+            series-correction-results.json
+          if-no-files-found: warn
