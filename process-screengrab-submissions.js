@@ -472,6 +472,21 @@ async function processSubmission(submission) {
     return null;
   });
   const display = getDisplayFromSermon(sermon, youtubeVideo);
+  // The series used older video titles with shifted part numbers.
+  // Use these verified YouTube IDs so any future screengrab upload
+  // will always print the correct episode number, even if CMS text lags.
+  const seriesPartByVideoId = {
+    eG1KK2_4sNE: 1,
+    e3XxLls_K4U: 2,
+    ZIpAKehGpX8: 3,
+    WjK_gI7GCMg: 4,
+    SuVA6lCmFKA: 5,
+  };
+  if (Object.prototype.hasOwnProperty.call(seriesPartByVideoId, videoId)) {
+    display.title = 'More of God, Less of Me';
+    display.subtitle = 'Part ' + seriesPartByVideoId[videoId];
+    display.speaker = 'Jason Watkins';
+  }
   console.log(`Title: ${display.title}`);
   console.log(`Speaker: ${display.speaker}`);
   if (display.subtitle) console.log(`Subtitle: ${display.subtitle}`);
