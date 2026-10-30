@@ -450,6 +450,14 @@ async function processLatestSubmission() {
   if (!sermon) throw new Error(`No existing Wix Sermons item found for video ID ${videoId}.`);
   console.log(`Matched sermon item: ${sermon.id}`);
 
+  // Youth Camp thumbnails are supplied by the YouTube uploads themselves.
+  // Never use screengrab/AI generation to replace the approved artwork.
+  if (/\byouth camp\b/i.test(String(sermon.data?.title || ''))) {
+    console.log('Youth Camp submission: keeping the original YouTube thumbnail; skipping AI generation.');
+    if (!IS_DRY_RUN) await markSubmissionSeen(submission);
+    return { processed: false, skipped: true, reason: 'YOUTH_CAMP_YOUTUBE_THUMBNAIL', videoId, sermonItemId: sermon.id };
+  }
+
   const youtubeVideo = await getVideoDetails(videoId).catch((err) => {
     console.warn(`Could not fetch YouTube metadata; using Wix fields only. ${err.message}`);
     return null;
