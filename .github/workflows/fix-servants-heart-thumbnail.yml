@@ -4,6 +4,7 @@ on:
   push:
     paths:
       - '.github/workflows/fix-servants-heart-thumbnail.yml'
+      - 'fix-servants-heart-thumbnail.js'
   workflow_dispatch: {}
 
 permissions:
