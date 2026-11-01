@@ -14,7 +14,7 @@ if (!WIX_API_KEY || !WIX_SITE_ID) throw new Error('Missing WIX_API_KEY or WIX_SI
 const VIDEO_ID = 'sPIuCUmCPgc';
 const SERMON_ID = 'fc41f85a-d9a7-492e-9f81-706232c244ea';
 const ORIGINAL_IMAGE = 'https://static.wixstatic.com/media/30c91e_8a4d69d0b67d4928951d354e9d388ae4~mv2.jpg';
-const OUTPUT_NAME = 'a-servants-heart-matthew-watkins-no-service-label.jpg';
+const OUTPUT_NAME = 'a-servants-heart-matthew-watkins-no-service-label-v2.jpg';
 
 registerFont(path.join(__dirname, 'assets', 'DejaVuSans.ttf'), { family: 'Bethel Sans' });
 registerFont(path.join(__dirname, 'assets', 'DejaVuSans-Bold.ttf'), { family: 'Bethel Sans Bold' });
@@ -58,9 +58,9 @@ async function render(originalBytes) {
 
   // Rebuild only the original left-panel area. No edits to the right-side photo.
   const panelGradient = ctx.createLinearGradient(50, 0, 630, 720);
-  panelGradient.addColorStop(0, 'rgba(37, 30, 75, 0.99)');
-  panelGradient.addColorStop(0.55, 'rgba(34, 29, 69, 0.99)');
-  panelGradient.addColorStop(1, 'rgba(24, 23, 55, 0.99)');
+  panelGradient.addColorStop(0, '#251e4b');
+  panelGradient.addColorStop(0.55, '#221d45');
+  panelGradient.addColorStop(1, '#181737');
   roundedPanel(ctx, 48, -10, 585, 738, 51);
   ctx.fillStyle = panelGradient;
   ctx.fill();
