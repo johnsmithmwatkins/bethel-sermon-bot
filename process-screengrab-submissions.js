@@ -11,6 +11,7 @@ const fs = require('fs/promises');
 const path = require('path');
 const os = require('os');
 const { File } = require('buffer');
+const { forThumbnail } = require('./thumbnail-title');
 
 const {
   WIX_API_KEY,
@@ -393,6 +394,7 @@ Sermon title: ${display.title}
 ${display.subtitle ? `Subtitle: ${display.subtitle}` : 'No subtitle.'}
 Church label: BETHEL TABERNACLE
 
+Never write service labels or day/time of service on the thumbnail (including Sunday Morning, Sunday Evening, Wednesday Night, Wednesday Service). Only show the clean sermon title and minister name.
 Do not add icons. Do not add a temple icon. Do not add decorative flourishes. Do not add heavy gold badges. Do not add extra words. Do not use the word Speaker. Do not make it ornate. Prioritize clean spacing, simple hierarchy, and readability.`;
 }
 
@@ -487,6 +489,7 @@ async function processSubmission(submission) {
     display.subtitle = 'Part ' + seriesPartByVideoId[videoId];
     display.speaker = 'Jason Watkins';
   }
+  Object.assign(display, forThumbnail(display));
   console.log(`Title: ${display.title}`);
   console.log(`Speaker: ${display.speaker}`);
   if (display.subtitle) console.log(`Subtitle: ${display.subtitle}`);
