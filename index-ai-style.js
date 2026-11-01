@@ -15,6 +15,7 @@ const fs = require('fs/promises');
 const fssync = require('fs');
 const os = require('os');
 const path = require('path');
+const { forThumbnail } = require('./thumbnail-title');
 
 const {
   YOUTUBE_API_KEY,
@@ -404,6 +405,7 @@ Exact text to include:
 
 Critical rules:
 - Do not copy text from the context image.
+- Never include any day-of-week or service-time label, for example Sunday Morning, Sunday Evening, Wednesday Night, or Wednesday Service. Only the cleaned sermon title and preacher name belong on the thumbnail.
 - Spell all text exactly as provided.
 - Do not make the preacher tiny.
 - Keep the finished result close to the clean, polished Bethel sermon thumbnails approved by the church.`;
@@ -485,6 +487,8 @@ async function main() {
     if (await sermonAlreadyExists(id)) continue;
 
     const { title, speaker, subtitle } = getDisplayData(video);
+    // Keep original sermon title in Wix, but use a clean headline in artwork.
+    const thumbnailDisplay = forThumbnail({ title, speaker, subtitle });
     const videoUrl = `https://www.youtube.com/watch?v=${id}`;
     console.log(`New sermon found: "${title}" (${videoUrl})`);
     console.log(`  Speaker: ${speaker}${subtitle ? ` / ${subtitle}` : ''}`);
@@ -503,7 +507,7 @@ async function main() {
     );
     const jpegBuffer = isYouthCamp
       ? await downloadThumbBuffer(sourceThumb)
-      : await buildSafeThumbnail({ video, title, subtitle, speaker, dateStr, fallbackThumbUrl: sourceThumb });
+      : await buildSafeThumbnail({ video, ...thumbnailDisplay, dateStr, fallbackThumbUrl: sourceThumb });
     if (isYouthCamp) console.log('  Youth Camp: preserving the original YouTube thumbnail (no AI, no overlays).');
 
     console.log('  Uploading thumbnail to Wix...');
