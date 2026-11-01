@@ -1,0 +1,34 @@
+name: Fix A Servant's Heart thumbnail text
+
+on:
+  push:
+    paths:
+      - '.github/workflows/fix-servants-heart-thumbnail.yml'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Install dependencies
+        run: npm install
+      - name: Fix existing thumbnail without changing preacher photo
+        run: node fix-servants-heart-thumbnail.js
+        env:
+          WIX_API_KEY: ${{ secrets.WIX_API_KEY }}
+          WIX_SITE_ID: ${{ secrets.WIX_SITE_ID }}
+      - name: Save corrected thumbnail preview
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: servants-heart-thumbnail-preview
+          path: a-servants-heart-corrected-preview.jpg
+          if-no-files-found: warn
