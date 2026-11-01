@@ -103,7 +103,7 @@ async function render(originalBytes) {
   ctx.stroke();
   ctx.font = '25px "Bethel Sans"';
   ctx.fillStyle = '#e4d7f1';
-  ctx.fillText('B E T H E L  T A B E R N A C L E', 119, 645);
+  ctx.fillText('BETHEL TABERNACLE', 129, 645);
 
   return canvas.toBuffer('image/jpeg', { quality: 0.95 });
 }
